@@ -265,6 +265,64 @@
         Draw keyway on shaft bore
         <span class="tip text-slate-500">ⓘ<span class="tip-body">Adds a DIN 6885 keyway slot to the bore. Key dims auto-sized to shaft diameter.</span></span>
       </label>
+      <div class="pt-1">
+        <div class="label-row">
+          <label class="text-xs text-slate-300">Centre distance offset (mm)
+            <span class="tip text-slate-500">ⓘ<span class="tip-body">Shifts gear 2 away from (+) or toward (−) gear 1. Positive &gt; backlash = gears disengage; negative = tooth-tip interference. Used to exercise the collision detector.</span></span>
+          </label>
+          <span id="cdOffVal" class="mono text-xs text-slate-400">+0.00 mm</span>
+        </div>
+        <input id="cdOffset" type="range" min="-3" max="6" step="0.05" value="0" class="w-full mt-1">
+        <div class="flex justify-between mt-1">
+          <span id="contactStatus" class="mono text-[10px] px-2 py-0.5 rounded border bg-emerald-900/40 text-emerald-300 border-emerald-800">meshed</span>
+          <button id="cdOffReset" class="text-[10px] text-slate-400 hover:text-slate-200 underline">reset</button>
+        </div>
+      </div>
+
+      <!-- Heatmap editor -->
+      <details class="pt-2 border-t border-slate-800">
+        <summary class="text-xs text-slate-300 cursor-pointer select-none py-1">
+          Heatmap editor
+          <span class="tip text-slate-500">ⓘ<span class="tip-body">Customise the colormap used by the stress visualisation. Pick a preset or build your own 5-stop gradient, and set the display range.</span></span>
+        </summary>
+        <div class="space-y-2 pt-2">
+          <label class="block text-xs text-slate-300">Preset
+            <select id="heatPreset" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm">
+              <option value="thermal">Thermal (default)</option>
+              <option value="jet">Jet</option>
+              <option value="viridis">Viridis</option>
+              <option value="inferno">Inferno</option>
+              <option value="grayscale">Grayscale</option>
+              <option value="custom">Custom</option>
+            </select>
+          </label>
+          <div id="heatPreview" class="w-full h-3 rounded border border-slate-700"></div>
+          <div class="label-row">
+            <span class="text-xs text-slate-400">Range</span>
+            <span id="heatRangeVal" class="mono text-[10px] text-slate-500">0.00 – 1.50</span>
+          </div>
+          <div class="grid grid-cols-2 gap-2">
+            <label class="text-[10px] text-slate-400">
+              vmin
+              <input id="heatVmin" type="range" min="0" max="2" step="0.01" value="0" class="w-full">
+            </label>
+            <label class="text-[10px] text-slate-400">
+              vmax
+              <input id="heatVmax" type="range" min="0.1" max="3" step="0.01" value="1.5" class="w-full">
+            </label>
+          </div>
+          <div id="heatCustomRow" class="hidden">
+            <div class="text-[10px] text-slate-400 mb-1">Custom stops (cold → hot)</div>
+            <div class="grid grid-cols-5 gap-1">
+              <input id="heatColor0" type="color" class="w-full h-7 bg-slate-950 border border-slate-700 rounded cursor-pointer">
+              <input id="heatColor1" type="color" class="w-full h-7 bg-slate-950 border border-slate-700 rounded cursor-pointer">
+              <input id="heatColor2" type="color" class="w-full h-7 bg-slate-950 border border-slate-700 rounded cursor-pointer">
+              <input id="heatColor3" type="color" class="w-full h-7 bg-slate-950 border border-slate-700 rounded cursor-pointer">
+              <input id="heatColor4" type="color" class="w-full h-7 bg-slate-950 border border-slate-700 rounded cursor-pointer">
+            </div>
+          </div>
+        </div>
+      </details>
       <p class="text-[10px] text-slate-500 leading-snug">Closed-form: Lewis bending + keyway shear/bearing + shaft torsion. For true FEA export STL and open in FreeCAD FEM / CalculiX.</p>
     </div>
 
@@ -537,11 +595,12 @@ function readInputs() {
   const mat2       = $('mat2').value;
   const stressView = $('stressView').checked;
   const showKey    = $('showKey').checked;
+  const cdOffset   = parseFloat($('cdOffset').value) || 0;
 
   return { gearType, designMode, tgtRatio, tgtCenter, solved,
            z1, z2, mod, face1, face2, bore1, bore2, pressure, helix, shaftAngle,
            eff, idler, mRpm, mT, mTmax, mPower, pwm, mLoad, oRpm, oT, oPower,
-           mat1, mat2, stressView, showKey };
+           mat1, mat2, stressView, showKey, cdOffset };
 }
 
 function computeGeometry(i) {
@@ -561,6 +620,73 @@ const MATERIALS = {
   al:    { name: 'Aluminum 6061', yield: 276, E: 69,  rho: 2.70, color: 0xcbd5e1 },
   steel: { name: 'Steel 1045',    yield: 530, E: 200, rho: 7.85, color: 0x64748b },
 };
+
+/* ---------- Heatmap colormap presets ---------- */
+// Each preset is 5 RGB stops, cold (0) → hot (1). Uploaded to shader as
+// uStop0..uStop4. Values are in linear 0..1 space.
+const COLORMAPS = {
+  thermal:  [[0.15,0.25,0.70],[0.10,0.75,0.90],[0.20,0.85,0.35],[1.00,0.85,0.10],[0.95,0.15,0.15]],
+  jet:      [[0.00,0.00,0.50],[0.00,0.50,1.00],[0.50,1.00,0.50],[1.00,0.50,0.00],[0.50,0.00,0.00]],
+  viridis:  [[0.27,0.00,0.33],[0.23,0.32,0.55],[0.13,0.57,0.55],[0.37,0.79,0.38],[0.99,0.91,0.14]],
+  inferno:  [[0.00,0.00,0.02],[0.30,0.05,0.40],[0.70,0.22,0.33],[0.98,0.55,0.04],[0.99,1.00,0.64]],
+  grayscale:[[0.05,0.05,0.05],[0.30,0.30,0.30],[0.55,0.55,0.55],[0.80,0.80,0.80],[1.00,1.00,1.00]],
+};
+
+// Current editor state — custom preset lives here so user edits persist while
+// tweaking color pickers. Default to a copy of thermal.
+const heatmapState = {
+  preset: 'thermal',
+  custom: COLORMAPS.thermal.map(c => c.slice()),
+  vmin: 0.0,
+  vmax: 1.5,
+};
+
+// Walk all stress-shader materials in the scene and push the current colormap
+// + range uniforms. Call after any preset / color / slider change.
+function applyColormap() {
+  const stops = heatmapState.preset === 'custom'
+    ? heatmapState.custom
+    : COLORMAPS[heatmapState.preset] || COLORMAPS.thermal;
+  const apply = (root) => {
+    if (!root) return;
+    root.traverse(obj => {
+      const m = obj.material;
+      if (!m || !m.uniforms || !m.uniforms.uStop0) return;
+      for (let i = 0; i < 5; i++) {
+        const [r, g, b] = stops[i];
+        m.uniforms['uStop' + i].value.set(r, g, b);
+      }
+      m.uniforms.uVmin.value = heatmapState.vmin;
+      m.uniforms.uVmax.value = heatmapState.vmax;
+    });
+  };
+  apply(typeof gear1 !== 'undefined' ? gear1 : null);
+  apply(typeof gear2 !== 'undefined' ? gear2 : null);
+  apply(typeof idlerMesh !== 'undefined' ? idlerMesh : null);
+  // Also refresh the little gradient preview in the UI.
+  updateHeatPreview();
+}
+
+function updateHeatPreview() {
+  const el = document.getElementById('heatPreview');
+  if (!el) return;
+  const stops = heatmapState.preset === 'custom'
+    ? heatmapState.custom
+    : COLORMAPS[heatmapState.preset] || COLORMAPS.thermal;
+  const toCss = ([r,g,b]) => `rgb(${(r*255)|0},${(g*255)|0},${(b*255)|0})`;
+  const gradient = stops.map((c, i) => `${toCss(c)} ${(i*25)}%`).join(', ');
+  el.style.background = `linear-gradient(to right, ${gradient})`;
+  // Sync color pickers when in custom mode.
+  for (let i = 0; i < 5; i++) {
+    const pick = document.getElementById('heatColor' + i);
+    if (pick) {
+      const [r,g,b] = stops[i];
+      const hex = '#' + [r,g,b].map(v =>
+        ((v*255)|0).toString(16).padStart(2,'0')).join('');
+      pick.value = hex;
+    }
+  }
+}
 
 // DIN 6885 / ISO 2491 key dimensions (w × h mm) for shaft diameter range
 function keyDims(bore) {
@@ -748,6 +874,8 @@ function refresh() {
   $('effVal').textContent = Math.round(i.eff * 100) + '%';
   $('pwmVal').textContent = Math.round(i.pwm * 100) + '%';
   $('animSpeedVal').textContent = (parseFloat($('animSpeed').value)).toFixed(1) + '×';
+  const cd = parseFloat($('cdOffset').value) || 0;
+  $('cdOffVal').textContent = (cd >= 0 ? '+' : '') + cd.toFixed(2) + ' mm';
 
   // result table
   $('rRatio').textContent   = geom.ratio.toFixed(3) + ' : 1';
@@ -835,6 +963,62 @@ $('playBtn').addEventListener('click', () => {
 $('animSpeed').addEventListener('input', () => {
   state.animSpeed = parseFloat($('animSpeed').value);
 });
+$('cdOffReset').addEventListener('click', () => {
+  $('cdOffset').value = 0;
+  refresh();
+});
+
+/* Heatmap editor wiring */
+(() => {
+  const presetSel = $('heatPreset');
+  const vminEl    = $('heatVmin');
+  const vmaxEl    = $('heatVmax');
+  const rangeLbl  = $('heatRangeVal');
+  const customRow = $('heatCustomRow');
+
+  const hexToRgb = (hex) => {
+    const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex);
+    return m ? [parseInt(m[1],16)/255, parseInt(m[2],16)/255, parseInt(m[3],16)/255] : [0,0,0];
+  };
+
+  const syncRange = () => {
+    let vmin = parseFloat(vminEl.value);
+    let vmax = parseFloat(vmaxEl.value);
+    if (vmax <= vmin) vmax = vmin + 0.01;
+    heatmapState.vmin = vmin;
+    heatmapState.vmax = vmax;
+    rangeLbl.textContent = `${vmin.toFixed(2)} – ${vmax.toFixed(2)}`;
+  };
+
+  presetSel.addEventListener('change', () => {
+    heatmapState.preset = presetSel.value;
+    customRow.classList.toggle('hidden', heatmapState.preset !== 'custom');
+    if (heatmapState.preset === 'custom') {
+      // Seed custom from current preset so editing starts from what's visible.
+      heatmapState.custom = (COLORMAPS[presetSel.value] || heatmapState.custom).map(c => c.slice());
+    }
+    applyColormap();
+  });
+
+  [vminEl, vmaxEl].forEach(el => el.addEventListener('input', () => {
+    syncRange();
+    applyColormap();
+  }));
+
+  for (let i = 0; i < 5; i++) {
+    const pick = $('heatColor' + i);
+    pick.addEventListener('input', () => {
+      heatmapState.preset = 'custom';
+      presetSel.value = 'custom';
+      customRow.classList.remove('hidden');
+      heatmapState.custom[i] = hexToRgb(pick.value);
+      applyColormap();
+    });
+  }
+
+  syncRange();
+  updateHeatPreview();
+})();
 
 /* ---------- 4. Three.js scene ---------- */
 let scene, camera, renderer, controls, gear1, gear2, idlerMesh, shaft1, shaft2, shaftIdler, housing;
@@ -1028,7 +1212,7 @@ function applyTwist(geom, depth, twistAtZ0, twistAtZdepth) {
  * stays correctly pinned to tooth roots and keyway corners even on helical
  * gears (we pass the original position as a separate attribute).
  */
-function makeStressMaterial({ rf, ra, rb, bore, keyway, demand, module }) {
+function makeStressMaterial({ rf, ra, rb, bore, keyway, demand, module, teeth }) {
   const kw = keyway ? keyway.w : 0;
   const kh = keyway ? keyway.h : 0;
   return new THREE.ShaderMaterial({
@@ -1038,9 +1222,29 @@ function makeStressMaterial({ rf, ra, rb, bore, keyway, demand, module }) {
       rBore:  { value: bore / 2 },
       keyW:   { value: kw },
       keyH:   { value: kh },
-      mod:    { value: module },
+      uMod:   { value: module },
+      teeth:  { value: teeth },
       demand: { value: demand },
-      lightDir: { value: new THREE.Vector3(0.4, 0.6, 1).normalize() },
+      // Local-frame angle (rad) pointing at the current mesh contact point.
+      // Updated every animation frame from animate().
+      uMeshAngle:   { value: 0.0 },
+      uGateEnabled: { value: 1.0 },   // 0 = show all teeth; 1 = only meshing tooth lit
+      // Contact state, driven by collision-detection code in animate().
+      //   0.0 = gears out of engagement (no tooth load)
+      //   1.0 = clean meshing contact
+      //  >1.0 = interference/collision (tooth tips crashing)
+      uContact:     { value: 1.0 },
+      // 5-stop colormap, uploaded by applyColormap(). Defaults to the
+      // "thermal" preset below. Ordered cold (0) → hot (4).
+      uStop0: { value: new THREE.Vector3(0.15, 0.25, 0.70) },
+      uStop1: { value: new THREE.Vector3(0.10, 0.75, 0.90) },
+      uStop2: { value: new THREE.Vector3(0.20, 0.85, 0.35) },
+      uStop3: { value: new THREE.Vector3(1.00, 0.85, 0.10) },
+      uStop4: { value: new THREE.Vector3(0.95, 0.15, 0.15) },
+      // Linear display range: values below uVmin → stop0, above uVmax → stop4.
+      uVmin:  { value: 0.0 },
+      uVmax:  { value: 1.5 },
+      lightDir:     { value: new THREE.Vector3(0.4, 0.6, 1).normalize() },
     },
     vertexShader: /* glsl */`
       // "aOrigXY" is the pre-twist XY of each vertex (stable stress coordinates).
@@ -1058,8 +1262,18 @@ function makeStressMaterial({ rf, ra, rb, bore, keyway, demand, module }) {
       precision highp float;
       varying vec2 vXY;
       varying vec3 vNormal;
-      uniform float rf, ra, rBore, keyW, keyH, mod, demand;
-      uniform vec3 lightDir;
+      uniform float rf, ra, rBore, keyW, keyH, uMod, demand, teeth;
+      uniform float uMeshAngle, uGateEnabled, uContact;
+      uniform float uVmin, uVmax;
+      uniform vec3  uStop0, uStop1, uStop2, uStop3, uStop4;
+      uniform vec3  lightDir;
+
+      // Shortest signed angle difference, result in [-π, π]
+      float angDiff(float a, float b) {
+        float d = a - b;
+        d = mod(d + 3.14159265, 6.2831853) - 3.14159265;
+        return d;
+      }
 
       float stressIntensity(vec2 p) {
         float r = length(p);
@@ -1067,12 +1281,31 @@ function makeStressMaterial({ rf, ra, rb, bore, keyway, demand, module }) {
         // --- Tooth bending (Lewis): Gaussian peak at root radius rf ---
         float tooth = 0.0;
         if (r >= rBore * 1.2 && r <= ra) {
-          float sigma = max(mod * 0.8, 0.5);
+          float sigma = max(uMod * 0.8, 0.5);
           float d = r - rf;
           tooth = exp(-(d * d) / (2.0 * sigma * sigma));
+
+          // --- Angular gate: only the tooth(s) currently in mesh carry load. ---
+          // The contact band is ~1 tooth-pitch wide (2π/Z) — a little more to
+          // include the tooth approaching and the one just leaving engagement.
+          if (uGateEnabled > 0.5) {
+            float theta = atan(p.y, p.x);
+            float dTh   = abs(angDiff(theta, uMeshAngle));
+            float pitch = 6.2831853 / max(teeth, 6.0);
+            // Full intensity over ±0.5 pitch, Gaussian fade over next 0.5 pitch
+            float gate  = exp(- (dTh * dTh) / (2.0 * (pitch * 0.55) * (pitch * 0.55)));
+            // Keep a faint 8 % baseline on idle teeth so the profile is still visible
+            tooth *= mix(1.0, gate, 0.92);
+          }
+
+          // --- Contact factor: 0 = not engaged, 1 = meshing. ---
+          // Tooth-bending stress only exists while teeth are actually loaded.
+          // uContact > 1 indicates interference and is handled in main().
+          tooth *= clamp(uContact, 0.0, 1.0);
         }
 
         // --- Keyway corner stress concentration (Kt ≈ 2.5) ---
+        // Keyway is fixed to the shaft — rotates with the gear, so no angular gate.
         float key = 0.0;
         if (keyW > 0.0) {
           float halfW = keyW * 0.5;
@@ -1085,7 +1318,6 @@ function makeStressMaterial({ rf, ra, rb, bore, keyway, demand, module }) {
           float dL = dot(p - cl, p - cl);
           key = max(Kt * exp(-dR / (2.0 * sig * sig)),
                     Kt * exp(-dL / (2.0 * sig * sig)));
-          // flank bearing zone inside the slot
           if (abs(p.x) <= halfW && p.y >= yCirc - 0.05 && p.y <= rBore + keyH) {
             key = max(key, 0.6);
           }
@@ -1093,25 +1325,45 @@ function makeStressMaterial({ rf, ra, rb, bore, keyway, demand, module }) {
         } else {
           if (abs(r - rBore) < 0.35) key = 0.25;
         }
-        return max(tooth, key) * demand;
+        // Auto-scaled magnitude: the PATTERN (which tooth is hot, where the
+        // keyway concentrates) is always visible, while the HUE shifts with
+        // actual load demand. Low demand → peak maps to green; high demand →
+        // peak maps to red. This mirrors how FEA post-processors auto-scale.
+        float raw = max(tooth, key);                  // 0 .. ~2.5 (keyway Kt)
+        float severity = 0.75 + 0.75 * clamp(demand, 0.0, 1.3);
+        return raw * severity;
       }
 
       vec3 heat(float v) {
-        float t = clamp(v, 0.0, 1.5) / 1.5;
-        vec3 c0 = vec3(0.15, 0.25, 0.70);
-        vec3 c1 = vec3(0.10, 0.75, 0.90);
-        vec3 c2 = vec3(0.20, 0.85, 0.35);
-        vec3 c3 = vec3(1.00, 0.85, 0.10);
-        vec3 c4 = vec3(0.95, 0.15, 0.15);
-        if (t < 0.25) return mix(c0, c1,  t          / 0.25);
-        if (t < 0.50) return mix(c1, c2, (t - 0.25)  / 0.25);
-        if (t < 0.75) return mix(c2, c3, (t - 0.50)  / 0.25);
-                      return mix(c3, c4, (t - 0.75)  / 0.25);
+        // Normalise into the user-configured display range [uVmin, uVmax].
+        float t = clamp((v - uVmin) / max(uVmax - uVmin, 1e-4), 0.0, 1.0);
+        if (t < 0.25) return mix(uStop0, uStop1,  t          / 0.25);
+        if (t < 0.50) return mix(uStop1, uStop2, (t - 0.25)  / 0.25);
+        if (t < 0.75) return mix(uStop2, uStop3, (t - 0.50)  / 0.25);
+                      return mix(uStop3, uStop4, (t - 0.75)  / 0.25);
       }
 
       void main() {
         float v = stressIntensity(vXY);
         vec3 base = heat(v);
+
+        // --- Collision visualisation ---
+        // uContact > 1 → interference at the tooth-tip contact band. Highlight
+        // that band in saturated magenta/red so the user can see WHERE the
+        // teeth are crashing.
+        if (uContact > 1.001) {
+          float r = length(vXY);
+          if (r > ra - uMod * 1.2 && r <= ra + uMod * 0.2) {
+            float theta = atan(vXY.y, vXY.x);
+            float dTh   = abs(angDiff(theta, uMeshAngle));
+            float pitch = 6.2831853 / max(teeth, 6.0);
+            if (dTh < pitch * 0.7) {
+              float k = smoothstep(pitch * 0.7, 0.0, dTh) * min(uContact - 1.0, 1.0);
+              base = mix(base, vec3(1.0, 0.15, 0.55), k);
+            }
+          }
+        }
+
         // Simple wrap-lighting so the geometry reads as 3D but the colour stays true.
         float l = max(dot(normalize(vNormal), normalize(lightDir)), 0.0);
         float shade = mix(0.65, 1.0, l);    // never darker than 65 % — keep colour readable
@@ -1308,7 +1560,7 @@ function buildGear({ teeth, module: m, face, bore, color, helix = 0,
     geom.translate(0, 0, -face / 2);
 
     if (stressField) {
-      const sfBevel = { ...stressField, rf, ra, rb, bore, keyway, module: m };
+      const sfBevel = { ...stressField, rf, ra, rb, bore, keyway, module: m, teeth };
       attachOrigXY(geom, null);   // bevel has no twist — current XY == original XY
       const bevelMat = makeStressMaterial(sfBevel);
       group.add(Object.assign(new THREE.Mesh(geom, bevelMat), { castShadow: true, receiveShadow: true }));
@@ -1326,7 +1578,7 @@ function buildGear({ teeth, module: m, face, bore, color, helix = 0,
   const { pts, r, rf, ra, rb } = buildInvoluteGearOutline(teeth, m, pressureAngle, helix);
 
   // If stress-view, fill in the geometry context for the field function
-  const sf = stressField ? { ...stressField, rf, ra, rb, bore, keyway, module: m } : null;
+  const sf = stressField ? { ...stressField, rf, ra, rb, bore, keyway, module: m, teeth } : null;
 
   const shape = new THREE.Shape();
   shape.moveTo(pts[0][0], pts[0][1]);
@@ -1361,8 +1613,13 @@ function buildGear({ teeth, module: m, face, bore, color, helix = 0,
   const extSteps   = isHelical ? 20 : 1;
 
   function extrudeSlab(depth, twistStart, twistEnd) {
+    // In stress view, bump curveSegments so that interior face triangles are
+    // split, giving the shader smoother normal interpolation across the gear
+    // body. (The stress field itself is per-pixel, so resolution is for
+    // lighting only.)
+    const curveSeg = sf ? 2 : 1;
     const geom = new THREE.ExtrudeGeometry(shape, {
-      depth, bevelEnabled: false, steps: extSteps, curveSegments: 1,
+      depth, bevelEnabled: false, steps: extSteps, curveSegments: curveSeg,
     });
     // Capture the pre-twist XY for shader stress field BEFORE applying twist
     if (sf) attachOrigXY(geom, null);
@@ -1445,7 +1702,7 @@ function rebuildGears() {
   if (!isBevel) {
     // Parallel shafts: along Z. Gear1 at origin, Gear2 offset by center distance along X.
     gear1.position.set(0, 0, 0);
-    gear2.position.set(geom.center, 0, 0);
+    gear2.position.set(geom.center + (i.cdOffset || 0), 0, 0);
 
     if (i.idler) {
       const zIdler = Math.max(12, Math.round((i.z1 + i.z2) / 4));
@@ -1502,6 +1759,10 @@ function rebuildGears() {
 
   scene.add(gear1, gear2);
 
+  // Push current heatmap colormap / range uniforms to any newly created
+  // stress-shader materials on the rebuilt gears.
+  applyColormap();
+
   // Frame camera
   const size = Math.max(geom.pd1 + geom.pd2, 60);
   camera.position.set(size * 1.2, size * 0.8, size * 1.4);
@@ -1515,7 +1776,7 @@ function syncScene() {
   const i = state.inputs;
   const key = [i.gearType, i.z1, i.z2, i.mod, i.face1, i.face2, i.bore1, i.bore2,
                i.shaftAngle, i.helix, i.pressure, i.idler,
-               i.mat1, i.mat2, i.showKey, i.stressView,
+               i.mat1, i.mat2, i.showKey, i.stressView, i.cdOffset,
                // In stress view, repaint whenever the SF demand changes materially
                i.stressView && state.stressAnalysis
                  ? Math.round((1/state.stressAnalysis.a1.sfMin)*100) + '/' +
@@ -1537,10 +1798,21 @@ function animate(timestamp) {
     const dt = Math.min((timestamp - (state._lastTs || timestamp)) / 1000, 0.05);
     state._lastTs = timestamp;
 
-    // Visual RPM: clamp to a human-perceptible range (20–180 rpm visual), then
-    // scale with the speed multiplier. The ratio between driver/driven is preserved.
+    // Visual RPM: clamp to a human-perceptible range, then scale with the
+    // speed multiplier. The ratio between driver/driven is preserved.
+    // In stress-view mode we slow things right down: we want ~1 tooth/second
+    // so the user can actually SEE the hot tooth travel around the gear.
+    // Driver tooth-pass rate = RPM/60 × Z teeth/sec → target 1.5 teeth/sec.
     const actualRpm  = Math.max(state.solver.motRpm, 0.1);
-    const visualRpm  = Math.max(Math.min(actualRpm, 180), 20) * state.animSpeed;
+    let visualRpm;
+    if (state.inputs && state.inputs.stressView) {
+      // 1.5 teeth/sec → RPM = 90 / Z.  e.g. Z=16 → 5.6 RPM, Z=48 → 1.9 RPM.
+      const zDriver = Math.max(state.inputs.z1 || 12, 6);
+      const stressRpm = 90 / zDriver;
+      visualRpm = stressRpm * state.animSpeed;
+    } else {
+      visualRpm = Math.max(Math.min(actualRpm, 180), 20) * state.animSpeed;
+    }
     const omega      = rpmToOmega(visualRpm) * dt;  // rad this frame
 
     driverRot += omega;
@@ -1559,7 +1831,85 @@ function animate(timestamp) {
     state._lastTs = timestamp; // keep timestamp fresh while paused/stalled
   }
 
+  // Update stress-shader uniforms every frame (so the hotspot tracks the mesh
+  // point in world-space while the gear rotates past). Local-frame mesh angle
+  // = world-frame contact angle − gear.rotation.z.
+  // Driver (gear1) meshes on its +X side (toward gear2), world angle = 0.
+  // Driven (gear2) meshes on its −X side (toward gear1), world angle = π.
+
+  // --- Contact detection ---
+  // Compare actual centre distance (world-space) to ideal (m·(Z₁+Z₂)/2). If
+  // |error| exceeds backlash tolerance, gears aren't really engaged; beyond
+  // interference threshold they physically crash. This drives the stress
+  // hot-tooth + the magenta collision flash.
+  let contact1 = 1.0, contact2 = 1.0;
+  const collision = detectContact();
+  if (collision) {
+    contact1 = contact2 = collision.factor;
+    // Expose to UI
+    if ($('contactStatus')) {
+      $('contactStatus').textContent = collision.label;
+      $('contactStatus').className = 'mono text-xs px-2 py-1 rounded border ' +
+        (collision.factor > 1.001 ? 'bg-red-900/50 text-red-200 border-red-700' :
+         collision.factor < 0.2   ? 'bg-amber-900/40 text-amber-200 border-amber-700'
+                                  : 'bg-emerald-900/40 text-emerald-300 border-emerald-800');
+    }
+  }
+
+  updateMeshUniforms(gear1, 0,        contact1);
+  updateMeshUniforms(gear2, Math.PI,  contact2);
+
   renderer.render(scene, camera);
+}
+
+/**
+ * Return { factor, label } describing mesh engagement.
+ *   factor = 0   : gears fully disengaged (no load transfer)
+ *   factor = 1   : healthy mesh
+ *   factor > 1   : interference (tip-tip collision)
+ */
+function detectContact() {
+  if (!state.inputs || !state.geom || !gear1 || !gear2) return null;
+  const i = state.inputs;
+  const ideal = (i.mod * (i.z1 + i.z2)) / 2;
+  // Measure actual distance between the two gear groups in world space
+  const p1 = new THREE.Vector3(); gear1.getWorldPosition(p1);
+  const p2 = new THREE.Vector3(); gear2.getWorldPosition(p2);
+  const actual = p1.distanceTo(p2);
+  const err = actual - ideal;                // + = too far apart, − = interfering
+  const backlashTol = 0.08 * i.mod;          // ~8 % of module = normal backlash window
+  const disengageTol = 0.6  * i.mod;         // beyond this, teeth no longer touch
+  const interfereTol = 0.3  * i.mod;         // closer than this, teeth tips crash
+
+  if (err > disengageTol) {
+    // Gears too far apart — no contact at all
+    const fade = 1 - Math.min((err - disengageTol) / (disengageTol), 1);
+    return { factor: Math.max(fade, 0), label: `DISENGAGED  ΔC=+${err.toFixed(2)}mm` };
+  }
+  if (err > backlashTol) {
+    // Partial / intermittent contact
+    const k = 1 - (err - backlashTol) / (disengageTol - backlashTol);
+    return { factor: k, label: `loose mesh  ΔC=+${err.toFixed(2)}mm` };
+  }
+  if (err < -interfereTol) {
+    // Tip-tip interference
+    const severity = Math.min((-err - interfereTol) / interfereTol + 1, 2.5);
+    return { factor: severity, label: `INTERFERENCE  ΔC=${err.toFixed(2)}mm` };
+  }
+  return { factor: 1, label: `meshed  ΔC=${err >= 0 ? '+' : ''}${err.toFixed(3)}mm` };
+}
+
+/** Push the local-frame mesh-contact angle + contact factor into a gear's materials. */
+function updateMeshUniforms(gearGroup, worldContactAngle, contactFactor) {
+  if (!gearGroup) return;
+  const localAngle = worldContactAngle - gearGroup.rotation.z;
+  gearGroup.traverse(obj => {
+    const m = obj.material;
+    if (m && m.uniforms) {
+      if (m.uniforms.uMeshAngle) m.uniforms.uMeshAngle.value = localAngle;
+      if (m.uniforms.uContact && contactFactor !== undefined) m.uniforms.uContact.value = contactFactor;
+    }
+  });
 }
 
 /* ---------- motor auto-calc ---------- */
