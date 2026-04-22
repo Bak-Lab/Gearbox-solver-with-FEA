@@ -256,9 +256,9 @@
         </label>
       </div>
       <label class="flex items-center gap-2 text-xs text-slate-300 pt-1">
-        <input id="stressView" type="checkbox" class="accent-amber-400">
-        Color-code by safety factor
-        <span class="tip text-slate-500">ⓘ<span class="tip-body">Tints each gear by its lowest safety factor: green ≥ 3, yellow 1.5–3, red &lt; 1.5.</span></span>
+        <input id="feaEnable" type="checkbox" class="accent-fuchsia-400">
+        Run 2-D plane-stress FEA
+        <span class="tip text-slate-500">ⓘ<span class="tip-body">Switches the main viewport to an animated 2-D plane-stress FEA of both gears. Each gear is pre-solved with a CST (constant-strain triangle) mesh under a point load at the pitch-circle contact along the line of action (pinned bore, Jacobi-PCG solver). The stress field is rotated into the currently-engaged tooth each frame and faded by proximity to the contact line.</span></span>
       </label>
       <label class="flex items-center gap-2 text-xs text-slate-300">
         <input id="showKey" type="checkbox" class="accent-amber-400" checked>
@@ -332,7 +332,7 @@
   <section class="col-span-12 lg:col-span-9 space-y-4">
 
     <!-- 3D preview card -->
-    <div class="card overflow-hidden relative">
+    <div id="previewCard" class="card overflow-hidden relative">
       <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800">
         <h2 class="font-semibold text-slate-200 flex items-center gap-2">
           <span class="w-2 h-2 rounded-full bg-emerald-400"></span> 3D Preview
@@ -354,6 +354,36 @@
       <div class="px-4 py-2 border-t border-slate-800 text-xs text-slate-400 flex justify-between">
         <span>Drag to orbit • Scroll to zoom • Right-drag to pan</span>
         <span id="rpmLive" class="mono">–</span>
+      </div>
+    </div>
+
+    <!-- 2-D Plane-Stress FEA card (animated, dual-gear) -->
+    <div id="feaCard" class="card overflow-hidden relative hidden">
+      <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800">
+        <h2 class="font-semibold text-slate-200 flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-fuchsia-400"></span> 2-D Plane-Stress FEA · animated contact
+          <span class="mono text-[10px] text-slate-500">CST · bore-fixed · flank-loaded · Jacobi-PCG</span>
+        </h2>
+        <div class="flex items-center gap-3 text-xs mono">
+          <label class="text-slate-400">Mesh
+            <select id="feaRes" class="ml-1 bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-xs">
+              <option value="10,20">Coarse</option>
+              <option value="16,32" selected>Medium</option>
+              <option value="22,44">Fine</option>
+              <option value="30,60">Ultra</option>
+            </select>
+          </label>
+          <span id="feaStats" class="text-slate-500">—</span>
+        </div>
+      </div>
+      <div class="relative bg-slate-950" style="height: 560px;">
+        <canvas id="feaCanvas" class="w-full h-full block"></canvas>
+        <div id="feaLegend" class="absolute bottom-2 right-2 text-[10px] mono text-slate-300 bg-slate-900/70 border border-slate-800 rounded px-2 py-1 space-y-0.5"></div>
+        <div id="feaContactChip" class="absolute top-2 left-2 text-[10px] mono text-slate-300 bg-slate-900/70 border border-slate-800 rounded px-2 py-1"></div>
+      </div>
+      <div class="px-4 py-2 border-t border-slate-800 text-xs text-slate-400 flex justify-between">
+        <span>Pre-solved FEA per gear · stress field rotated into each currently-engaged tooth · fade = proximity to line of action</span>
+        <span id="feaSolveInfo" class="mono">—</span>
       </div>
     </div>
 
@@ -593,14 +623,14 @@ function readInputs() {
   // Material / stress
   const mat1       = $('mat1').value;
   const mat2       = $('mat2').value;
-  const stressView = $('stressView').checked;
   const showKey    = $('showKey').checked;
   const cdOffset   = parseFloat($('cdOffset').value) || 0;
+  const feaEnable  = $('feaEnable') ? $('feaEnable').checked : false;
 
   return { gearType, designMode, tgtRatio, tgtCenter, solved,
            z1, z2, mod, face1, face2, bore1, bore2, pressure, helix, shaftAngle,
            eff, idler, mRpm, mT, mTmax, mPower, pwm, mLoad, oRpm, oT, oPower,
-           mat1, mat2, stressView, showKey, cdOffset };
+           mat1, mat2, showKey, cdOffset, feaEnable };
 }
 
 function computeGeometry(i) {
@@ -665,6 +695,11 @@ function applyColormap() {
   apply(typeof idlerMesh !== 'undefined' ? idlerMesh : null);
   // Also refresh the little gradient preview in the UI.
   updateHeatPreview();
+  // And the 2-D FEA canvas — it repaints each frame anyway, but force a
+  // redraw here so colormap edits feel instant when the animation is paused.
+  if (typeof state !== 'undefined' && state.fea && typeof renderFEAFrame === 'function') {
+    renderFEAFrame();
+  }
 }
 
 function updateHeatPreview() {
@@ -746,6 +781,489 @@ function analyseStress(T, Z, m_mm, face_mm, bore_mm, matKey) {
     shaftShear, sfShaft,
     sfMin: Math.min(sfTooth, sfKey, sfShaft),
   };
+}
+
+/* ========================================================
+ *  2-D Plane-Stress FEA (real, not procedural)
+ *  ---------------------------------------------------
+ *  - Structured polar mesh over one tooth sector
+ *  - 3-node Constant-Strain Triangle (CST) elements
+ *  - Plane-stress constitutive:
+ *        D = E/(1-ν²) · [[1,ν,0],[ν,1,0],[0,0,(1-ν)/2]]
+ *  - Dirichlet (fixed) BC on all bore nodes (penalty method)
+ *  - Point load at pitch-circle node on the loaded flank,
+ *    direction = line of action (rotated by pressure angle)
+ *  - Sparse K (Map-of-row) + Jacobi-preconditioned CG solver
+ *  - Element-wise von-Mises stress recovery
+ *  ======================================================== */
+const FEA = (() => {
+
+  // tooth outer-boundary radius r(θ) over sector [-τ/2, +τ/2].
+  // Pure involute: tip arc for |θ|≤φ_tip, flank involute in between,
+  // root circle outside. (Simplified — no fillet curve.)
+  function outerRadius(theta, Z, m, paDeg) {
+    const r  = m * Z / 2;
+    const rb = r * Math.cos(paDeg * Math.PI / 180);
+    const ra = r + m;
+    const rf = Math.max(r - 1.25 * m, rb * 0.6);
+    const sHalf = Math.PI / (2 * Z);
+    const inv = (a) => Math.tan(a) - a;
+    const alpha_p = Math.acos(Math.min(1, rb / r));
+    const inv_p   = inv(alpha_p);
+    const alpha_a = Math.acos(Math.min(1, rb / ra));
+    const phi_tip  = sHalf + inv_p - inv(alpha_a);
+    const rStart   = Math.max(rb, rf);
+    const phi_base = sHalf + inv_p - inv(Math.acos(Math.min(1, rb / rStart)));
+    const absTh = Math.abs(theta);
+    if (absTh <= phi_tip)  return ra;
+    if (absTh >= phi_base) return rf;
+    let lo = rStart, hi = ra;
+    for (let k = 0; k < 32; k++) {
+      const mid = 0.5 * (lo + hi);
+      const p = sHalf + inv_p - inv(Math.acos(Math.min(1, rb / mid)));
+      if (p > absTh) lo = mid; else hi = mid;
+    }
+    return 0.5 * (lo + hi);
+  }
+
+  function buildMesh({ Z, m, pa, bore, nRad, nTan }) {
+    const tau  = 2 * Math.PI / Z;
+    const rIn  = bore / 2;
+    const nNodes = nRad * nTan;
+    const nodes = new Float64Array(2 * nNodes);
+    for (let j = 0; j < nTan; j++) {
+      const theta = -tau / 2 + tau * (j / (nTan - 1));
+      const rOut  = outerRadius(theta, Z, m, pa);
+      for (let i = 0; i < nRad; i++) {
+        const t  = i / (nRad - 1);
+        // Radial bias: more elements near the outer surface where stress lives.
+        const tb = 1 - Math.pow(1 - t, 1.6);
+        const r  = rIn + (rOut - rIn) * tb;
+        const k  = (j * nRad + i) * 2;
+        nodes[k]   = r * Math.cos(theta);
+        nodes[k+1] = r * Math.sin(theta);
+      }
+    }
+    const nEl = (nRad - 1) * (nTan - 1) * 2;
+    const tris = new Uint32Array(3 * nEl);
+    let t = 0;
+    for (let j = 0; j < nTan - 1; j++) {
+      for (let i = 0; i < nRad - 1; i++) {
+        const n00 = j*nRad + i;
+        const n10 = j*nRad + (i+1);
+        const n01 = (j+1)*nRad + i;
+        const n11 = (j+1)*nRad + (i+1);
+        tris[t++] = n00; tris[t++] = n10; tris[t++] = n11;
+        tris[t++] = n00; tris[t++] = n11; tris[t++] = n01;
+      }
+    }
+    return { nodes, tris, nRad, nTan, nNodes, nEl };
+  }
+
+  function cstElement(p1, p2, p3, E, nu, thickness) {
+    const x1=p1[0], y1=p1[1], x2=p2[0], y2=p2[1], x3=p3[0], y3=p3[1];
+    const area2 = (x2 - x1) * (y3 - y1) - (x3 - x1) * (y2 - y1);
+    if (area2 <= 0) return { Ke: new Float64Array(36), B: new Float64Array(18), area: 0 };
+    const b1 = y2 - y3, b2 = y3 - y1, b3 = y1 - y2;
+    const c1 = x3 - x2, c2 = x1 - x3, c3 = x2 - x1;
+    const inv2A = 1.0 / area2;
+    const B = new Float64Array(18);
+    B[0]=b1*inv2A; B[2]=b2*inv2A; B[4]=b3*inv2A;
+    B[7]=c1*inv2A; B[9]=c2*inv2A; B[11]=c3*inv2A;
+    B[12]=c1*inv2A; B[13]=b1*inv2A;
+    B[14]=c2*inv2A; B[15]=b2*inv2A;
+    B[16]=c3*inv2A; B[17]=b3*inv2A;
+    const f = E / (1 - nu * nu);
+    const D00 = f, D01 = f*nu, D11 = f, D22 = f*(1-nu)/2;
+    const DB = new Float64Array(18);
+    for (let c = 0; c < 6; c++) {
+      DB[c]    = D00 * B[c]    + D01 * B[6+c];
+      DB[6+c]  = D01 * B[c]    + D11 * B[6+c];
+      DB[12+c] = D22 * B[12+c];
+    }
+    const Ke = new Float64Array(36);
+    const A  = 0.5 * area2 * thickness;
+    for (let r = 0; r < 6; r++) {
+      for (let c = 0; c < 6; c++) {
+        Ke[r*6+c] = (B[r]*DB[c] + B[6+r]*DB[6+c] + B[12+r]*DB[12+c]) * A;
+      }
+    }
+    return { Ke, B, area: 0.5 * area2 };
+  }
+
+  const makeK = (n) => { const rows = new Array(n); for (let i=0;i<n;i++) rows[i] = new Map(); return { n, rows }; };
+  const addK  = (K, i, j, v) => { const r = K.rows[i]; r.set(j, (r.get(j) || 0) + v); };
+  const mvK   = (K, x, y) => {
+    for (let i = 0; i < K.n; i++) {
+      let s = 0;
+      for (const [j, v] of K.rows[i]) s += v * x[j];
+      y[i] = s;
+    }
+  };
+
+  function assemble(mesh, E, nu, thickness) {
+    const { nodes, tris, nNodes, nEl } = mesh;
+    const K = makeK(2 * nNodes);
+    const elems = new Array(nEl);
+    for (let e = 0; e < nEl; e++) {
+      const n1 = tris[3*e], n2 = tris[3*e+1], n3 = tris[3*e+2];
+      const { Ke, B } = cstElement(
+        [nodes[2*n1], nodes[2*n1+1]],
+        [nodes[2*n2], nodes[2*n2+1]],
+        [nodes[2*n3], nodes[2*n3+1]],
+        E, nu, thickness);
+      const dof = [2*n1, 2*n1+1, 2*n2, 2*n2+1, 2*n3, 2*n3+1];
+      for (let r = 0; r < 6; r++) {
+        const dr = dof[r];
+        for (let c = 0; c < 6; c++) {
+          const v = Ke[r*6+c];
+          if (v !== 0) addK(K, dr, dof[c], v);
+        }
+      }
+      elems[e] = { B, n: [n1, n2, n3] };
+    }
+    return { K, elems };
+  }
+
+  function solveCG(K, F, tol = 1e-9, maxIter = 4000) {
+    const n = K.n;
+    const u = new Float64Array(n);
+    const r = new Float64Array(n); r.set(F);
+    const diag = new Float64Array(n);
+    for (let i = 0; i < n; i++) diag[i] = K.rows[i].get(i) || 1;
+    const z = new Float64Array(n);
+    for (let i = 0; i < n; i++) z[i] = r[i] / diag[i];
+    const p = new Float64Array(n); p.set(z);
+    const Ap = new Float64Array(n);
+    let rz = 0; for (let i = 0; i < n; i++) rz += r[i] * z[i];
+    let bnorm = 0; for (let i = 0; i < n; i++) bnorm += F[i]*F[i]; bnorm = Math.sqrt(bnorm) || 1;
+    let iter = 0;
+    for (; iter < maxIter; iter++) {
+      mvK(K, p, Ap);
+      let pAp = 0; for (let i = 0; i < n; i++) pAp += p[i] * Ap[i];
+      if (!(pAp > 0)) break;
+      const alpha = rz / pAp;
+      for (let i = 0; i < n; i++) { u[i] += alpha * p[i]; r[i] -= alpha * Ap[i]; }
+      let rnorm2 = 0; for (let i = 0; i < n; i++) rnorm2 += r[i]*r[i];
+      if (Math.sqrt(rnorm2) < tol * bnorm) { iter++; break; }
+      for (let i = 0; i < n; i++) z[i] = r[i] / diag[i];
+      let rz_new = 0; for (let i = 0; i < n; i++) rz_new += r[i] * z[i];
+      const beta = rz_new / rz;
+      for (let i = 0; i < n; i++) p[i] = z[i] + beta * p[i];
+      rz = rz_new;
+    }
+    return { u, iter };
+  }
+
+  function vonMises(elems, u, E, nu) {
+    const vm = new Float64Array(elems.length);
+    const f = E / (1 - nu*nu);
+    for (let e = 0; e < elems.length; e++) {
+      const { B, n } = elems[e];
+      const ue = [u[2*n[0]], u[2*n[0]+1], u[2*n[1]], u[2*n[1]+1], u[2*n[2]], u[2*n[2]+1]];
+      const ex = B[0]*ue[0] + B[2]*ue[2] + B[4]*ue[4];
+      const ey = B[7]*ue[1] + B[9]*ue[3] + B[11]*ue[5];
+      const gxy= B[12]*ue[0]+B[13]*ue[1]+B[14]*ue[2]+B[15]*ue[3]+B[16]*ue[4]+B[17]*ue[5];
+      const sx = f * (ex + nu*ey);
+      const sy = f * (nu*ex + ey);
+      const txy= f * (1-nu)/2 * gxy;
+      vm[e] = Math.sqrt(sx*sx - sx*sy + sy*sy + 3*txy*txy);
+    }
+    return vm;
+  }
+
+  function run({ Z, m, pa, bore, face, torque_Nm, matKey, nRad = 16, nTan = 32, loadFlank = 'right' }) {
+    const mat   = MATERIALS[matKey] || MATERIALS.steel;
+    const E_MPa = mat.E * 1000;                    // GPa → MPa (= N/mm²)
+    const nu    = 0.30;
+    const mesh  = buildMesh({ Z, m, pa, bore, nRad, nTan });
+    const { K, elems } = assemble(mesh, E_MPa, nu, face);
+
+    // BC — pin bore (i=0, all j) via large penalty on diagonal
+    let avgDiag = 0;
+    for (let i = 0; i < K.n; i++) avgDiag += (K.rows[i].get(i) || 0);
+    avgDiag /= K.n;
+    const penalty = 1e10 * avgDiag;
+    for (let j = 0; j < mesh.nTan; j++) {
+      const nd = j * mesh.nRad;
+      addK(K, 2*nd,   2*nd,   penalty);
+      addK(K, 2*nd+1, 2*nd+1, penalty);
+    }
+
+    // Load — point force at pitch-point on the chosen flank, along line of action
+    const F = new Float64Array(K.n);
+    const rPitch     = m * Z / 2;
+    const paRad      = pa * Math.PI / 180;
+    // Right flank sits at -π/(2Z); left flank at +π/(2Z).
+    const flankSign  = (loadFlank === 'left') ? +1 : -1;
+    const thetaPitch = flankSign * Math.PI / (2*Z);
+    const px = rPitch * Math.cos(thetaPitch);
+    const py = rPitch * Math.sin(thetaPitch);
+    let bestN = 0, bestD2 = Infinity;
+    for (let n = 0; n < mesh.nNodes; n++) {
+      const dx = mesh.nodes[2*n] - px, dy = mesh.nodes[2*n+1] - py;
+      const d2 = dx*dx + dy*dy;
+      if (d2 < bestD2) { bestD2 = d2; bestN = n; }
+    }
+    const Ft = (torque_Nm * 1000) / rPitch;        // N  (tangential)
+    const Fn = Ft / Math.cos(paRad);               // along line of action
+    const tx = -Math.sin(thetaPitch), ty = Math.cos(thetaPitch);    // tangent CCW
+    const rx =  Math.cos(thetaPitch), ry = Math.sin(thetaPitch);    // radial outward
+    // Mating gear pushes this tooth INTO its flank. For right flank (-Y side of
+    // tooth), that's +tangent component + inward radial; for left flank
+    // (+Y side), the load direction is mirrored (−tangent + inward radial).
+    const tSign = (loadFlank === 'left') ? -1 : +1;
+    const fx = Fn * (tSign * Math.cos(paRad) * tx - Math.sin(paRad) * rx);
+    const fy = Fn * (tSign * Math.cos(paRad) * ty - Math.sin(paRad) * ry);
+    F[2*bestN]     = fx;
+    F[2*bestN + 1] = fy;
+
+    const { u, iter } = solveCG(K, F);
+    const vm = vonMises(elems, u, E_MPa, nu);
+
+    let maxVM = 0, maxEl = 0;
+    for (let i = 0; i < vm.length; i++) if (vm[i] > maxVM) { maxVM = vm[i]; maxEl = i; }
+
+    return { mesh, u, vm, maxVM, maxEl, iter, loadNode: bestN, material: mat,
+             E_MPa, nu, torque_Nm, face, Ft, Fn, pa, loadFlank };
+  }
+
+  return { run, buildMesh };
+})();
+
+/* ---- FEA dual-gear setup + animated renderer ------------------- */
+// Pre-solve BOTH gears once per refresh (geometry / torque / material change).
+// The stress field for each gear is then rotated into the currently-engaged
+// tooth every animation frame — so the hot zone truly moves with the contact
+// point instead of being painted as a static screen overlay.
+function setupFEADualGear() {
+  const card = document.getElementById('feaCard');
+  if (!card) return;
+  const enabled = state.inputs && state.inputs.feaEnable;
+  card.classList.toggle('hidden', !enabled);
+  const prev = document.getElementById('previewCard');
+  if (prev) prev.classList.toggle('hidden', !!enabled);
+  if (!enabled) { state.fea = null; return; }
+
+  const i = state.inputs;
+  if (!state.torques) return;
+  const [nRad, nTan] = document.getElementById('feaRes').value.split(',').map(Number);
+  const { T1, T2 } = state.torques;
+
+  const t0 = performance.now();
+  let g1, g2;
+  try {
+    // Gear 1 (driver) : reaction loads its RIGHT flank (trailing, seen from +X)
+    // Gear 2 (driven) : drive force loads its LEFT flank
+    g1 = FEA.run({ Z: i.z1, m: i.mod, pa: i.pressure, bore: i.bore1, face: i.face1,
+                   matKey: i.mat1, torque_Nm: Math.max(T1, 0.001),
+                   nRad, nTan, loadFlank: 'right' });
+    g2 = FEA.run({ Z: i.z2, m: i.mod, pa: i.pressure, bore: i.bore2, face: i.face2,
+                   matKey: i.mat2, torque_Nm: Math.max(T2, 0.001),
+                   nRad, nTan, loadFlank: 'left' });
+  } catch (err) {
+    console.error('FEA solve failed', err);
+    return;
+  }
+  const ms = performance.now() - t0;
+
+  const center = i.mod * (i.z1 + i.z2) / 2 + (i.cdOffset || 0);
+  state.fea = { g1, g2, center, solvedMs: ms };
+
+  const sEl = document.getElementById('feaStats');
+  if (sEl) sEl.textContent =
+    `G1 ${g1.mesh.nNodes}n/${g1.mesh.nEl}e · G2 ${g2.mesh.nNodes}n/${g2.mesh.nEl}e`;
+  const infoEl = document.getElementById('feaSolveInfo');
+  if (infoEl) infoEl.textContent =
+    `solve ${ms.toFixed(0)} ms · σ_max: G1 ${g1.maxVM.toFixed(1)} · G2 ${g2.maxVM.toFixed(1)} MPa vM · Ft ${g1.Ft.toFixed(1)} N`;
+
+  const legend = document.getElementById('feaLegend');
+  if (legend) {
+    const stops = heatmapState.preset === 'custom'
+      ? heatmapState.custom
+      : COLORMAPS[heatmapState.preset] || COLORMAPS.thermal;
+    const gradient = stops.map((c, k) =>
+      `rgb(${(c[0]*255)|0},${(c[1]*255)|0},${(c[2]*255)|0}) ${(k*25)}%`).join(', ');
+    const vmax = Math.max(g1.maxVM, g2.maxVM);
+    legend.innerHTML = `
+      <div class="flex items-center gap-2">
+        <span>0</span>
+        <span class="inline-block rounded" style="width:96px;height:8px;background:linear-gradient(to right,${gradient})"></span>
+        <span>${vmax.toFixed(1)}</span>
+        <span class="text-slate-500">MPa vM</span>
+      </div>
+    `;
+  }
+}
+
+// Draw full gear outline (base colour) in its current world rotation.
+function drawGearOutline(ctx, proj, cx, cy, rot, Z, m, pa, bore, matColorHex) {
+  const { pts, rf } = buildInvoluteGearOutline(Z, m, pa, 0, false);
+  const cRot = Math.cos(rot), sRot = Math.sin(rot);
+  ctx.beginPath();
+  for (let k = 0; k < pts.length; k++) {
+    const lx = pts[k][0], ly = pts[k][1];
+    const wx = cx + lx*cRot - ly*sRot;
+    const wy = cy + lx*sRot + ly*cRot;
+    const [px, py] = proj(wx, wy);
+    if (k === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fillStyle = matColorHex + '66';
+  ctx.fill();
+  ctx.strokeStyle = matColorHex + 'cc';
+  ctx.lineWidth = 0.8;
+  ctx.stroke();
+  // Bore (dark circle)
+  const [bx, by] = proj(cx, cy);
+  const [bex]    = proj(cx + bore/2, cy);
+  ctx.beginPath();
+  ctx.arc(bx, by, Math.abs(bex - bx), 0, 2*Math.PI);
+  ctx.fillStyle = '#020617';
+  ctx.fill();
+  ctx.strokeStyle = matColorHex + 'aa';
+  ctx.stroke();
+}
+
+// Paint the stress field on each tooth, modulated by proximity to contact line.
+function drawGearFEA(ctx, proj, cx, cy, gearRot, fea, Z, contactAngleLocal, vmax, stops) {
+  const tau = 2*Math.PI / Z;
+  const mesh = fea.mesh, vm = fea.vm;
+  const heatColor = (v) => {
+    let t = v / Math.max(vmax, 1e-9);
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    const scaled = t * 4;
+    const idx    = Math.min(3, Math.floor(scaled));
+    const ff     = scaled - idx;
+    const c0 = stops[idx], c1 = stops[idx+1];
+    return [c0[0]+(c1[0]-c0[0])*ff, c0[1]+(c1[1]-c0[1])*ff, c0[2]+(c1[2]-c0[2])*ff];
+  };
+
+  // For every tooth, see how close its centerline currently sits to the
+  // contact direction. Cos² bell over one pitch gives a smooth handoff
+  // between adjacent teeth (both lit during transition).
+  for (let k = 0; k < Z; k++) {
+    const toothAngle = k*tau + gearRot;
+    let d = toothAngle - contactAngleLocal;
+    d = ((d % (2*Math.PI)) + 3*Math.PI) % (2*Math.PI) - Math.PI;
+    if (Math.abs(d) >= tau) continue;
+    const fade = Math.pow(Math.cos(d * Math.PI / (2*tau)), 2);
+    if (fade < 0.02) continue;
+
+    const rotK = toothAngle;                       // FEA mesh has tooth at θ=0
+    const cR = Math.cos(rotK), sR = Math.sin(rotK);
+    ctx.globalAlpha = fade;
+    for (let e = 0; e < mesh.nEl; e++) {
+      const n1 = mesh.tris[3*e], n2 = mesh.tris[3*e+1], n3 = mesh.tris[3*e+2];
+      const l1x = mesh.nodes[2*n1], l1y = mesh.nodes[2*n1+1];
+      const l2x = mesh.nodes[2*n2], l2y = mesh.nodes[2*n2+1];
+      const l3x = mesh.nodes[2*n3], l3y = mesh.nodes[2*n3+1];
+      const [a, b] = proj(cx + l1x*cR - l1y*sR, cy + l1x*sR + l1y*cR);
+      const [c, d2]= proj(cx + l2x*cR - l2y*sR, cy + l2x*sR + l2y*cR);
+      const [f, g] = proj(cx + l3x*cR - l3y*sR, cy + l3x*sR + l3y*cR);
+      const [cr, cg, cb] = heatColor(vm[e]);
+      ctx.fillStyle = `rgb(${(cr*255)|0},${(cg*255)|0},${(cb*255)|0})`;
+      ctx.beginPath();
+      ctx.moveTo(a, b); ctx.lineTo(c, d2); ctx.lineTo(f, g); ctx.closePath();
+      ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+
+// Called every animation frame when feaEnable is on.
+function renderFEAFrame() {
+  const canvas = document.getElementById('feaCanvas');
+  const fea = state.fea;
+  if (!canvas || !fea || !state.inputs) return;
+
+  const Wc = canvas.clientWidth, Hc = canvas.clientHeight;
+  const dpr = window.devicePixelRatio || 1;
+  if (canvas.width !== Wc*dpr || canvas.height !== Hc*dpr) {
+    canvas.width = Wc*dpr; canvas.height = Hc*dpr;
+  }
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.fillStyle = '#020617';
+  ctx.fillRect(0, 0, Wc, Hc);
+
+  const i = state.inputs;
+  const m = i.mod;
+  const r1 = m*i.z1/2, r2 = m*i.z2/2;
+  const ra1 = r1 + m, ra2 = r2 + m;                // tip radii (for framing)
+  const C  = fea.center;
+
+  // World extent: both gears side by side with a little margin.
+  const leftX  = -ra1 - m;
+  const rightX = C + ra2 + m;
+  const topY   = Math.max(ra1, ra2) + m;
+  const botY   = -topY;
+  const pad = 24;
+  const s = Math.min((Wc - 2*pad) / (rightX - leftX),
+                     (Hc - 2*pad) / (topY - botY));
+  const tpx = Wc/2 - s*(leftX + rightX)/2;
+  const tpy = Hc/2 + s*(topY + botY)/2;
+  const proj = (x, y) => [s*x + tpx, -s*y + tpy];
+
+  // Rotations — share driverRot (updated in animate()). Gear 2 rotates the
+  // opposite way at 1/ratio speed. Phase offset of π puts gear 2's tooth
+  // centreline at θ=π locally (i.e. facing gear 1), and an extra half-pitch
+  // makes tooth/space interlock visually.
+  const rot1 = driverRot;
+  const rot2 = -driverRot * i.z1 / i.z2 + Math.PI + Math.PI / i.z2;
+
+  const col1 = '#' + MATERIALS[i.mat1].color.toString(16).padStart(6, '0');
+  const col2 = '#' + MATERIALS[i.mat2].color.toString(16).padStart(6, '0');
+
+  // Base outlines
+  drawGearOutline(ctx, proj, 0, 0, rot1, i.z1, m, i.pressure, i.bore1, col1);
+  drawGearOutline(ctx, proj, C, 0, rot2, i.z2, m, i.pressure, i.bore2, col2);
+
+  // Stress fields — shared colormap & vmax so both gears are comparable.
+  const stops = heatmapState.preset === 'custom'
+    ? heatmapState.custom
+    : COLORMAPS[heatmapState.preset] || COLORMAPS.thermal;
+  const vmax = Math.max(fea.g1.maxVM, fea.g2.maxVM, 1e-9);
+  drawGearFEA(ctx, proj, 0, 0, rot1, fea.g1, i.z1, 0,          vmax, stops);
+  drawGearFEA(ctx, proj, C, 0, rot2, fea.g2, i.z2, Math.PI,    vmax, stops);
+
+  // Overlay: pitch circles, line of action, contact point
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 4]);
+  ctx.strokeStyle = 'rgba(148, 163, 184, 0.5)';
+  const drawCirc = (cx, cy, r) => {
+    const [px0, py0] = proj(cx, cy);
+    const [pxr]      = proj(cx + r, cy);
+    ctx.beginPath(); ctx.arc(px0, py0, Math.abs(pxr - px0), 0, 2*Math.PI); ctx.stroke();
+  };
+  drawCirc(0, 0, r1);
+  drawCirc(C, 0, r2);
+  ctx.setLineDash([]);
+
+  // Contact point / pitch point is at (r1, 0) world
+  const paRad = i.pressure * Math.PI / 180;
+  const [cpx, cpy] = proj(r1, 0);
+  // Line of action: through pitch point, rotated by pressure angle
+  const lax = Math.cos(paRad), lay = Math.sin(paRad);
+  const L = Math.max(r1, r2);
+  const [l1x, l1y] = proj(r1 - L*lax, -L*lay);
+  const [l2x, l2y] = proj(r1 + L*lax,  L*lay);
+  ctx.strokeStyle = 'rgba(244, 114, 182, 0.55)';
+  ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.moveTo(l1x, l1y); ctx.lineTo(l2x, l2y); ctx.stroke();
+  // Contact point
+  ctx.fillStyle = '#f472b6';
+  ctx.beginPath(); ctx.arc(cpx, cpy, 4, 0, 2*Math.PI); ctx.fill();
+
+  // Contact-status chip
+  const chip = document.getElementById('feaContactChip');
+  if (chip) {
+    const idealC = m * (i.z1 + i.z2) / 2;
+    const dC = C - idealC;
+    chip.textContent =
+      `C=${C.toFixed(2)}mm  Δ=${(dC>=0?'+':'')}${dC.toFixed(2)}  ·  ` +
+      `ω₁=${(driverRot*180/Math.PI).toFixed(0)}°  ω₂=${(rot2*180/Math.PI).toFixed(0)}°`;
+  }
 }
 
 // Map a safety factor to an RGB color (green → yellow → red)
@@ -938,7 +1456,9 @@ function refresh() {
   state.inputs = i;
   state.stalled = s.stalled;
   state.stressAnalysis = { a1, a2 };
+  state.torques = { T1, T2 };
   syncScene();
+  setupFEADualGear();
 }
 
 /* Tab logic */
@@ -1018,6 +1538,14 @@ $('cdOffReset').addEventListener('click', () => {
 
   syncRange();
   updateHeatPreview();
+})();
+
+/* FEA controls wiring */
+(() => {
+  const resSel = document.getElementById('feaRes');
+  if (!resSel) return;
+  resSel.addEventListener('change', () => setupFEADualGear());
+  window.addEventListener('resize', renderFEAFrame);
 })();
 
 /* ---------- 4. Three.js scene ---------- */
@@ -1107,11 +1635,14 @@ function polarXY(r, angleDeg) {
  * helixDeg is used only for the transverse pressure-angle correction;
  * the 3-D twist is applied in buildGear() as a vertex post-process.
  */
-function buildInvoluteGearOutline(teeth, m, paDeg, helixDeg = 0) {
+function buildInvoluteGearOutline(teeth, m, paDeg, helixDeg = 0, dense = false) {
   const CLEARANCE  = 0.05;   // same as gears.scad
-  const FLANK_STEPS = 16;    // same as gears.scad "step = rho_ra/16"
-  const TIP_STEPS   = 3;
-  const ROOT_STEPS  = 4;
+  // In FEA / stress view we bump sampling density so the tooth flank and
+  // root fillet get many more surface elements, which is where stress
+  // actually concentrates.
+  const FLANK_STEPS = dense ? 28 : 16;
+  const TIP_STEPS   = dense ? 6  : 3;
+  const ROOT_STEPS  = dense ? 10 : 4;
 
   /* ---- dimensions (gears.scad naming) ------------------------------ */
   const helixRad   = helixDeg * Math.PI / 180;
@@ -1575,7 +2106,7 @@ function buildGear({ teeth, module: m, face, bore, color, helix = 0,
   }
 
   /* ---- Spur / helical / herringbone ------------------------------ */
-  const { pts, r, rf, ra, rb } = buildInvoluteGearOutline(teeth, m, pressureAngle, helix);
+  const { pts, r, rf, ra, rb } = buildInvoluteGearOutline(teeth, m, pressureAngle, helix, !!stressField);
 
   // If stress-view, fill in the geometry context for the field function
   const sf = stressField ? { ...stressField, rf, ra, rb, bore, keyway, module: m, teeth } : null;
@@ -1610,14 +2141,15 @@ function buildGear({ teeth, module: m, face, bore, color, helix = 0,
   // gamma = (180/π) * face / (r * tan(90-helix))  [deg]  = face * tan(helix) / r [rad]
   const totalTwist = face * Math.tan(helixRad) / r;
   const isHelical  = Math.abs(totalTwist) > 1e-4;
-  const extSteps   = isHelical ? 20 : 1;
+  // In stress view we need depth tessellation on spur gears too, otherwise
+  // side walls are a single quad per outline segment — which makes the
+  // heatmap look "projected" instead of living on the element faces.
+  const extSteps   = isHelical ? 20 : (sf ? 8 : 1);
 
   function extrudeSlab(depth, twistStart, twistEnd) {
-    // In stress view, bump curveSegments so that interior face triangles are
-    // split, giving the shader smoother normal interpolation across the gear
-    // body. (The stress field itself is per-pixel, so resolution is for
-    // lighting only.)
-    const curveSeg = sf ? 2 : 1;
+    // FEA/stress view: subdivide interior faces so the colormap looks like
+    // it lives on actual elements rather than being a screen-space overlay.
+    const curveSeg = sf ? 4 : 1;
     const geom = new THREE.ExtrudeGeometry(shape, {
       depth, bevelEnabled: false, steps: extSteps, curveSegments: curveSeg,
     });
@@ -1630,6 +2162,10 @@ function buildGear({ teeth, module: m, face, bore, color, helix = 0,
   // Pick the material: shader-based heatmap in stress view, PBR otherwise.
   const gearMat = sf ? makeStressMaterial(sf) : mat;
 
+  const addSlab = (geom) => {
+    group.add(Object.assign(new THREE.Mesh(geom, gearMat), { castShadow: true, receiveShadow: true }));
+  };
+
   if (herringbone && isHelical) {
     // Bottom half: runs from world z = -face/2 → 0
     // (extruded 0→face/2, translated by -face/2)
@@ -1637,17 +2173,17 @@ function buildGear({ teeth, module: m, face, bore, color, helix = 0,
     const halfTwist  = totalTwist / 2;
     const g1 = extrudeSlab(face / 2, halfTwist, 0);
     g1.translate(0, 0, -face / 2);
-    group.add(Object.assign(new THREE.Mesh(g1, gearMat), { castShadow: true, receiveShadow: true }));
+    addSlab(g1);
 
     // Top half: world z = 0 → face/2
     // twist goes 0 (centre) → -halfTwist (far end), mirroring bottom half
     const g2 = extrudeSlab(face / 2, 0, -halfTwist);
     // g2 already sits 0 → face/2 — no translate needed
-    group.add(Object.assign(new THREE.Mesh(g2, gearMat), { castShadow: true, receiveShadow: true }));
+    addSlab(g2);
   } else {
     const g = extrudeSlab(face, 0, totalTwist);
     g.translate(0, 0, -face / 2);
-    group.add(Object.assign(new THREE.Mesh(g, gearMat), { castShadow: true, receiveShadow: true }));
+    addSlab(g);
   }
 
   group.userData = { teeth, module: m, face, pitchDiameter: m * teeth };
@@ -1669,21 +2205,14 @@ function rebuildGears() {
   const helix = (i.gearType === 'helical' || i.gearType === 'herringbone') ? i.helix : 0;
   const herringbone = (i.gearType === 'herringbone');
 
-  // Material colors (overridden if stressView is on — handled in refresh())
+  // Material colors (always — 3-D viewport is pure visualisation now; FEA
+  // heatmap lives in the dedicated 2-D panel).
   const col1 = MATERIALS[i.mat1].color;
   const col2 = MATERIALS[i.mat2].color;
   const key1 = i.showKey ? keyDims(i.bore1) : null;
   const key2 = i.showKey ? keyDims(i.bore2) : null;
 
-  // If stressView is on, compute per-gear stress demand = 1 / SF_min and pass
-  // it as a stressField hint. The buildGear function will paint per-vertex
-  // colors showing the bending/keyway stress distribution.
   let sf1 = null, sf2 = null;
-  if (i.stressView && state.stressAnalysis) {
-    const { a1, a2 } = state.stressAnalysis;
-    sf1 = { demand: 1 / Math.max(a1.sfMin, 0.05) };
-    sf2 = { demand: 1 / Math.max(a2.sfMin, 0.05) };
-  }
 
   gear1 = buildGear({
     teeth: i.z1, module: i.mod, face: i.face1, bore: i.bore1,
@@ -1776,12 +2305,7 @@ function syncScene() {
   const i = state.inputs;
   const key = [i.gearType, i.z1, i.z2, i.mod, i.face1, i.face2, i.bore1, i.bore2,
                i.shaftAngle, i.helix, i.pressure, i.idler,
-               i.mat1, i.mat2, i.showKey, i.stressView, i.cdOffset,
-               // In stress view, repaint whenever the SF demand changes materially
-               i.stressView && state.stressAnalysis
-                 ? Math.round((1/state.stressAnalysis.a1.sfMin)*100) + '/' +
-                   Math.round((1/state.stressAnalysis.a2.sfMin)*100)
-                 : ''
+               i.mat1, i.mat2, i.showKey, i.cdOffset,
               ].join('|');
   if (key !== state._sceneKey) {
     state._sceneKey = key;
@@ -1805,8 +2329,9 @@ function animate(timestamp) {
     // Driver tooth-pass rate = RPM/60 × Z teeth/sec → target 1.5 teeth/sec.
     const actualRpm  = Math.max(state.solver.motRpm, 0.1);
     let visualRpm;
-    if (state.inputs && state.inputs.stressView) {
-      // 1.5 teeth/sec → RPM = 90 / Z.  e.g. Z=16 → 5.6 RPM, Z=48 → 1.9 RPM.
+    if (state.inputs && state.inputs.feaEnable) {
+      // FEA view: slow the gears right down so the user can SEE the hot
+      // tooth travel around each gear. Target ~1.5 teeth/sec on the driver.
       const zDriver = Math.max(state.inputs.z1 || 12, 6);
       const stressRpm = 90 / zDriver;
       visualRpm = stressRpm * state.animSpeed;
@@ -1860,6 +2385,12 @@ function animate(timestamp) {
   updateMeshUniforms(gear2, Math.PI,  contact2);
 
   renderer.render(scene, camera);
+
+  // 2-D FEA view shares driverRot with the 3-D scene so the contact point
+  // moves in lockstep with the Three.js animation.
+  if (state.inputs && state.inputs.feaEnable && state.fea) {
+    renderFEAFrame();
+  }
 }
 
 /**
