@@ -950,45 +950,37 @@ const FEA = (() => {
       x > keyRect.xMin && x < keyRect.xMax &&
       y > keyRect.yMin && y < keyRect.yMax;
 
-    // Target mesh density derives from UI controls. Aim for roughly
-    // nRad*nTan*1.5 elements regardless of gear size by choosing element
-    // edge length from annular area.
-    const targetElems = Math.max(nRad * nTan * 1.5, 400);
-    const annArea     = Math.PI * (ra*ra - rBore*rBore);
-    const edge        = Math.max(
-      Math.sqrt(annArea / targetElems * (2 / Math.sqrt(3))),
-      m * 0.3
-    );
+    // Target mesh density derives from UI controls. We base the element
+    // edge length on the MODULE (tooth size), not gear area, so meshing
+    // gears share identical triangle sizes regardless of tooth count —
+    // otherwise a 60-tooth driven gear gets visibly larger cells than a
+    // 20-tooth driver at the same preset.
+    //
+    // nTan controls how many radial rings per tooth. At nTan=32 (Medium)
+    // we aim for ~edge ≈ m/3 — fine enough to resolve the fillet curve.
+    const edge = Math.max(m * (32 / Math.max(nTan, 8)) / 3, m * 0.15);
 
-    // Resample the gear outline uniformly by arc-length at spacing ~edge,
-    // so the boundary point density matches the interior grid — otherwise
-    // Delaunay produces sliver triangles along the flanks. Curvature-adaptive:
-    // denser near the fillet where the outline curves sharply.
-    const targetBoundarySpacing = edge * 0.75;       // slightly denser than interior
-    const resampled = [];
-    let carry = 0;
+    // Densify (not resample) the gear outline. We KEEP every original
+    // vertex from buildInvoluteGearOutline — this locks the true involute
+    // shape — and only INSERT extra points into segments longer than
+    // targetBoundarySpacing so interior grid density matches the boundary
+    // and Delaunator doesn't produce slivers.
+    const targetBoundarySpacing = edge * 0.75;
+    const densified = [];
     for (let k = 0; k < rawOutline.length; k++) {
       const [x0, y0] = rawOutline[k];
       const [x1, y1] = rawOutline[(k + 1) % rawOutline.length];
+      densified.push([x0, y0]);                      // original vertex kept
       const segLen = Math.hypot(x1 - x0, y1 - y0);
-      if (k === 0) resampled.push([x0, y0]);
-      let t = targetBoundarySpacing - carry;
-      while (t < segLen) {
-        const u = t / segLen;
-        resampled.push([x0 + (x1 - x0) * u, y0 + (y1 - y0) * u]);
-        t += targetBoundarySpacing;
-      }
-      carry = (segLen - (t - targetBoundarySpacing));
-      if (carry < 0) carry = 0;
-    }
-    // Drop last point if it collides with the first (closing the loop).
-    if (resampled.length > 3) {
-      const a = resampled[0], b = resampled[resampled.length - 1];
-      if (Math.hypot(a[0]-b[0], a[1]-b[1]) < targetBoundarySpacing * 0.5) {
-        resampled.pop();
+      if (segLen > targetBoundarySpacing * 1.5) {
+        const nInsert = Math.floor(segLen / targetBoundarySpacing);
+        for (let i = 1; i <= nInsert; i++) {
+          const u = i / (nInsert + 1);
+          densified.push([x0 + (x1 - x0) * u, y0 + (y1 - y0) * u]);
+        }
       }
     }
-    const outlinePts = resampled;
+    const outlinePts = densified;
 
     // Flatten outline to typed array (used by point-in-polygon tests).
     const outline = new Float64Array(outlinePts.length * 2);
@@ -1592,8 +1584,12 @@ const Physics = (() => {
 
     engine = Engine.create();
     engine.gravity.x = 0; engine.gravity.y = 0;
-    engine.positionIterations = 10;
-    engine.velocityIterations = 10;
+    // Contact needs very high iteration counts — gear teeth are thin
+    // and meet at steep angles, so the solver needs many passes to
+    // fully resolve penetration each tick.
+    engine.positionIterations = 30;
+    engine.velocityIterations = 20;
+    engine.constraintIterations = 8;
 
     const g1 = buildInvoluteGearOutline(Z1, m, pa, 0, false);
     const g2 = buildInvoluteGearOutline(Z2, m, pa, 0, false);
@@ -1602,15 +1598,23 @@ const Physics = (() => {
 
     const C_px = C * SCALE;
 
+    // Slop is how deep Matter lets bodies sink into each other before
+    // applying corrective impulse. Default is ~0.05 × body size; way too
+    // lenient for gear-tooth contact. Force a tight value in physics
+    // units: 0.5 % of module scales down to a visually sharp contact.
+    const tightSlop = Math.max(m * SCALE * 0.005, 0.005);
+
     driver = Bodies.fromVertices(0, 0, [v1], {
       isStatic: true,                              // kinematic: we drive its angle
-      friction: 0.0, frictionStatic: 0.0, restitution: 0
+      friction: 0.0, frictionStatic: 0.0, restitution: 0,
+      slop: tightSlop
     }, true);
 
     driven = Bodies.fromVertices(C_px, 0, [v2], {
       friction: 0.0, frictionStatic: 0.0, restitution: 0,
       frictionAir: 0.04,                           // light damping
-      density: 0.002
+      density: 0.002,
+      slop: tightSlop
     }, true);
 
     // Initial phase: interlock tooth/space.
@@ -1638,10 +1642,25 @@ const Physics = (() => {
     // Matter uses Y-down screen coords; our world uses Y-up. A rotation
     // of +θ CCW in world == -θ in Matter. We only care that driven.angle
     // returned is negated back.
-    Body.setAngle(driver, -driverAngle);
-    // Clamp dt so a slow frame doesn't blow up the solver.
-    const dtMs = Math.min(Math.max(dtSec, 1/240), 1/30) * 1000;
-    Engine.update(engine, dtMs);
+    //
+    // CRITICAL: Body.setAngle(body, angle, updateVelocity=true) tells the
+    // collision solver the driver's CURRENT angular velocity — without
+    // this, teleporting the angle each frame makes the engine think the
+    // driver is stationary, and fast-rotating teeth tunnel through the
+    // driven gear instead of pushing it.
+    Body.setAngle(driver, -driverAngle, true);
+
+    // Clamp dt. To avoid tunnelling when the per-frame driver rotation
+    // exceeds half a tooth, we sub-step the engine with a fixed interior
+    // dt small enough that the tip of a tooth moves < 20 % of the slop
+    // budget per sub-step.
+    const dtMsTotal = Math.min(Math.max(dtSec, 1/240), 1/30) * 1000;
+    // Heuristic: cap each sub-step at 4 ms (≈240 Hz). Gears rarely spin
+    // fast enough that even this is too coarse; if so, `nSub` grows.
+    const subStepMs = 4;
+    const nSub = Math.max(1, Math.ceil(dtMsTotal / subStepMs));
+    const dtSub = dtMsTotal / nSub;
+    for (let s = 0; s < nSub; s++) Engine.update(engine, dtSub);
     return -driven.angle;
   }
 
