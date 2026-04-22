@@ -6,6 +6,11 @@
 <title>Gearbox Solver</title>
 <!-- Tailwind CSS via CDN (dev-only; fine for a single-file tool) -->
 <script src="https://cdn.tailwindcss.com"></script>
+<!-- Matter.js 2D physics + poly-decomp for concave gear outlines. -->
+<script src="https://cdn.jsdelivr.net/npm/poly-decomp@0.3.0/build/decomp.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/matter-js@0.20.0/build/matter.min.js"></script>
+<!-- Delaunator for unstructured 2D FEA meshes (full-gear triangulation). -->
+<script src="https://cdn.jsdelivr.net/npm/delaunator@5.0.1/delaunator.min.js"></script>
 <!-- Three.js via ES modules + importmap (r160+ requires modules) -->
 <script type="importmap">
 {
@@ -64,9 +69,66 @@
       <span class="chip">Bidirectional solver</span>
       <span class="chip">Three.js</span>
       <span class="chip">Involute teeth</span>
+      <button id="creditsBtn" class="ml-2 px-3 py-1.5 text-xs rounded-md border border-slate-700 bg-slate-800/60 hover:bg-slate-800 hover:border-slate-600 text-slate-200 transition-colors" title="Credits &amp; acknowledgements">
+        Credits
+      </button>
     </div>
   </div>
 </header>
+
+<!-- Credits modal -->
+<div id="creditsModal" class="hidden fixed inset-0 z-50 bg-slate-950/75 backdrop-blur-sm items-center justify-center p-4">
+  <div class="max-w-xl w-full card p-5 space-y-4 relative">
+    <button id="creditsClose" class="absolute top-3 right-3 text-slate-400 hover:text-slate-100 text-xl leading-none w-7 h-7 grid place-items-center rounded hover:bg-slate-800" aria-label="Close">×</button>
+    <h2 class="text-lg font-semibold text-slate-100 flex items-center gap-2">
+      <span class="w-2 h-2 rounded-full bg-sky-400"></span> Credits &amp; acknowledgements
+    </h2>
+    <p class="text-xs text-slate-400">
+      Gearbox Solver is a single-file web app. It stands on the shoulders of these open-source libraries and references.
+    </p>
+
+    <div class="space-y-3 text-sm">
+      <div>
+        <div class="font-medium text-slate-200">Libraries</div>
+        <ul class="mt-1 space-y-1 text-slate-300 text-xs">
+          <li>• <a href="https://threejs.org/" target="_blank" rel="noopener" class="text-sky-400 hover:underline">Three.js</a> — 3-D rendering (r160, MIT)</li>
+          <li>• <a href="https://brm.io/matter-js/" target="_blank" rel="noopener" class="text-sky-400 hover:underline">Matter.js</a> — 2-D rigid-body collision physics (MIT)</li>
+          <li>• <a href="https://github.com/schteppe/poly-decomp.js" target="_blank" rel="noopener" class="text-sky-400 hover:underline">poly-decomp.js</a> — concave polygon decomposition for Matter.js (MIT)</li>
+          <li>• <a href="https://github.com/mapbox/delaunator" target="_blank" rel="noopener" class="text-sky-400 hover:underline">Delaunator</a> — fast Delaunay triangulation used for the FEA mesh (ISC)</li>
+          <li>• <a href="https://tailwindcss.com/" target="_blank" rel="noopener" class="text-sky-400 hover:underline">Tailwind CSS</a> — UI styling (MIT)</li>
+        </ul>
+      </div>
+
+      <div>
+        <div class="font-medium text-slate-200">Geometry &amp; engineering references</div>
+        <ul class="mt-1 space-y-1 text-slate-300 text-xs">
+          <li>• Involute tooth profile from the <a href="https://github.com/chrisspen/gears" target="_blank" rel="noopener" class="text-sky-400 hover:underline">gears.scad</a> OpenSCAD library (port of the classical ev(r,ρ) polar involute).</li>
+          <li>• DIN 867 / DIN 58400 gear proportions and root-clearance conventions.</li>
+          <li>• Lewis bending-stress form factor (AGMA 20° full-depth approximation).</li>
+          <li>• Hertzian contact-stress closed-form solution for gear-pair line contact.</li>
+        </ul>
+      </div>
+
+      <div>
+        <div class="font-medium text-slate-200">FEA implementation</div>
+        <p class="mt-1 text-slate-300 text-xs">
+          Hand-rolled 2-D plane-stress constant-strain-triangle (CST) solver with sparse assembly, Jacobi-preconditioned conjugate-gradient, and rotational-symmetry tensor superposition. Not derived from any library — written from standard textbook formulations.
+        </p>
+      </div>
+
+      <div>
+        <div class="font-medium text-slate-200">Colormaps</div>
+        <p class="mt-1 text-slate-300 text-xs">
+          Thermal / viridis / inferno presets inspired by the <a href="https://matplotlib.org/" target="_blank" rel="noopener" class="text-sky-400 hover:underline">matplotlib</a> perceptually-uniform colormap family.
+        </p>
+      </div>
+    </div>
+
+    <div class="text-[11px] text-slate-500 pt-2 border-t border-slate-800">
+      If anything here is missing or mis-attributed, please open an issue.
+    </div>
+  </div>
+</div>
 
 <!-- =========================================================
      MAIN LAYOUT
@@ -798,66 +860,180 @@ function analyseStress(T, Z, m_mm, face_mm, bore_mm, matKey) {
  *  ======================================================== */
 const FEA = (() => {
 
-  // tooth outer-boundary radius r(θ) over sector [-τ/2, +τ/2].
-  // Pure involute: tip arc for |θ|≤φ_tip, flank involute in between,
-  // root circle outside. (Simplified — no fillet curve.)
-  function outerRadius(theta, Z, m, paDeg) {
-    const r  = m * Z / 2;
-    const rb = r * Math.cos(paDeg * Math.PI / 180);
-    const ra = r + m;
-    const rf = Math.max(r - 1.25 * m, rb * 0.6);
-    const sHalf = Math.PI / (2 * Z);
-    const inv = (a) => Math.tan(a) - a;
-    const alpha_p = Math.acos(Math.min(1, rb / r));
-    const inv_p   = inv(alpha_p);
-    const alpha_a = Math.acos(Math.min(1, rb / ra));
-    const phi_tip  = sHalf + inv_p - inv(alpha_a);
-    const rStart   = Math.max(rb, rf);
-    const phi_base = sHalf + inv_p - inv(Math.acos(Math.min(1, rb / rStart)));
-    const absTh = Math.abs(theta);
-    if (absTh <= phi_tip)  return ra;
-    if (absTh >= phi_base) return rf;
-    let lo = rStart, hi = ra;
-    for (let k = 0; k < 32; k++) {
-      const mid = 0.5 * (lo + hi);
-      const p = sHalf + inv_p - inv(Math.acos(Math.min(1, rb / mid)));
-      if (p > absTh) lo = mid; else hi = mid;
+  // Point-in-polygon (ray cast). pts is flat [x0,y0,x1,y1,...].
+  function pointInRing(px, py, pts) {
+    let inside = false;
+    const n = pts.length / 2;
+    for (let i = 0, j = n - 1; i < n; j = i++) {
+      const xi = pts[2*i], yi = pts[2*i+1];
+      const xj = pts[2*j], yj = pts[2*j+1];
+      const intersect = ((yi > py) !== (yj > py)) &&
+        (px < (xj - xi) * (py - yi) / (yj - yi + 1e-30) + xi);
+      if (intersect) inside = !inside;
     }
-    return 0.5 * (lo + hi);
+    return inside;
   }
 
+  // Build a full-gear unstructured triangular mesh using Delaunator.
+  //   outer boundary = real involute gear outline
+  //   inner boundary = bore circle
+  //   interior = jittered grid, culled to the annular body
+  // Returns { nodes, tris, nRad, nTan, nNodes, nEl, boreNodes,
+  //           outlineNodes, ra, rf, rb, r }.
   function buildMesh({ Z, m, pa, bore, nRad, nTan }) {
-    const tau  = 2 * Math.PI / Z;
-    const rIn  = bore / 2;
-    const nNodes = nRad * nTan;
-    const nodes = new Float64Array(2 * nNodes);
-    for (let j = 0; j < nTan; j++) {
-      const theta = -tau / 2 + tau * (j / (nTan - 1));
-      const rOut  = outerRadius(theta, Z, m, pa);
-      for (let i = 0; i < nRad; i++) {
-        const t  = i / (nRad - 1);
-        // Radial bias: more elements near the outer surface where stress lives.
-        const tb = 1 - Math.pow(1 - t, 1.6);
-        const r  = rIn + (rOut - rIn) * tb;
-        const k  = (j * nRad + i) * 2;
-        nodes[k]   = r * Math.cos(theta);
-        nodes[k+1] = r * Math.sin(theta);
+    if (typeof Delaunator === 'undefined') {
+      throw new Error('Delaunator not loaded');
+    }
+    // Use the real CCW gear outline (dense sampling on flanks & fillets).
+    const { pts: rawOutline, ra, rf, rb, r } =
+      buildInvoluteGearOutline(Z, m, pa, 0, true);
+    const rBore = Math.max(bore / 2, 0.05 * r);
+
+    // Target mesh density derives from UI controls. Aim for roughly
+    // nRad*nTan*1.5 elements regardless of gear size by choosing element
+    // edge length from annular area.
+    const targetElems = Math.max(nRad * nTan * 1.5, 400);
+    const annArea     = Math.PI * (ra*ra - rBore*rBore);
+    const edge        = Math.max(
+      Math.sqrt(annArea / targetElems * (2 / Math.sqrt(3))),
+      m * 0.3
+    );
+
+    // Resample the gear outline uniformly by arc-length at spacing ~edge,
+    // so the boundary point density matches the interior grid — otherwise
+    // Delaunay produces sliver triangles along the flanks. Curvature-adaptive:
+    // denser near the fillet where the outline curves sharply.
+    const targetBoundarySpacing = edge * 0.75;       // slightly denser than interior
+    const resampled = [];
+    let carry = 0;
+    for (let k = 0; k < rawOutline.length; k++) {
+      const [x0, y0] = rawOutline[k];
+      const [x1, y1] = rawOutline[(k + 1) % rawOutline.length];
+      const segLen = Math.hypot(x1 - x0, y1 - y0);
+      if (k === 0) resampled.push([x0, y0]);
+      let t = targetBoundarySpacing - carry;
+      while (t < segLen) {
+        const u = t / segLen;
+        resampled.push([x0 + (x1 - x0) * u, y0 + (y1 - y0) * u]);
+        t += targetBoundarySpacing;
+      }
+      carry = (segLen - (t - targetBoundarySpacing));
+      if (carry < 0) carry = 0;
+    }
+    // Drop last point if it collides with the first (closing the loop).
+    if (resampled.length > 3) {
+      const a = resampled[0], b = resampled[resampled.length - 1];
+      if (Math.hypot(a[0]-b[0], a[1]-b[1]) < targetBoundarySpacing * 0.5) {
+        resampled.pop();
       }
     }
-    const nEl = (nRad - 1) * (nTan - 1) * 2;
-    const tris = new Uint32Array(3 * nEl);
-    let t = 0;
-    for (let j = 0; j < nTan - 1; j++) {
-      for (let i = 0; i < nRad - 1; i++) {
-        const n00 = j*nRad + i;
-        const n10 = j*nRad + (i+1);
-        const n01 = (j+1)*nRad + i;
-        const n11 = (j+1)*nRad + (i+1);
-        tris[t++] = n00; tris[t++] = n10; tris[t++] = n11;
-        tris[t++] = n00; tris[t++] = n11; tris[t++] = n01;
+    const outlinePts = resampled;
+
+    // Flatten outline to typed array (used by point-in-polygon tests).
+    const outline = new Float64Array(outlinePts.length * 2);
+    for (let k = 0; k < outlinePts.length; k++) {
+      outline[2*k]   = outlinePts[k][0];
+      outline[2*k+1] = outlinePts[k][1];
+    }
+
+    const nodes = [];                                 // [x,y,...]
+    const boreNodes   = [];
+    const outlineNodes = [];
+
+    // 1) Bore circle — fixed, first in list so their DOFs are easy to pin.
+    const nBore = Math.max(Math.ceil(2 * Math.PI * rBore / edge), 24);
+    for (let k = 0; k < nBore; k++) {
+      const t = 2 * Math.PI * k / nBore;
+      boreNodes.push(nodes.length / 2);
+      nodes.push(rBore * Math.cos(t), rBore * Math.sin(t));
+    }
+
+    // 2) Gear outline — resampled uniformly, defines the concave boundary.
+    for (let k = 0; k < outlinePts.length; k++) {
+      outlineNodes.push(nodes.length / 2);
+      nodes.push(outlinePts[k][0], outlinePts[k][1]);
+    }
+
+    // 3) Interior fill — jittered triangular grid, culled to annular body.
+    const dx = edge, dy = edge * Math.sqrt(3) / 2;
+    const minD2 = (edge * 0.55) * (edge * 0.55);
+    const gridXmin = -ra - edge, gridXmax = ra + edge;
+    const gridYmin = -ra - edge, gridYmax = ra + edge;
+    // Spatial hash for quick min-distance-to-boundary test.
+    const cellSize = edge;
+    const gridBuckets = new Map();
+    const cellKey = (ix, iy) => ix * 100003 + iy;
+    const bucketAdd = (x, y) => {
+      const ix = Math.floor(x / cellSize), iy = Math.floor(y / cellSize);
+      const key = cellKey(ix, iy);
+      let b = gridBuckets.get(key);
+      if (!b) { b = []; gridBuckets.set(key, b); }
+      b.push(x, y);
+    };
+    for (let k = 0; k < nodes.length; k += 2) bucketAdd(nodes[k], nodes[k+1]);
+    const tooClose = (x, y) => {
+      const ix = Math.floor(x / cellSize), iy = Math.floor(y / cellSize);
+      for (let oy = -1; oy <= 1; oy++)
+        for (let ox = -1; ox <= 1; ox++) {
+          const b = gridBuckets.get(cellKey(ix+ox, iy+oy));
+          if (!b) continue;
+          for (let p = 0; p < b.length; p += 2) {
+            const ddx = x - b[p], ddy = y - b[p+1];
+            if (ddx*ddx + ddy*ddy < minD2) return true;
+          }
+        }
+      return false;
+    };
+    let row = 0;
+    for (let y = gridYmin; y <= gridYmax; y += dy, row++) {
+      const xOff = (row & 1) ? dx * 0.5 : 0;
+      for (let x = gridXmin + xOff; x <= gridXmax; x += dx) {
+        const jx = x + (Math.random() - 0.5) * edge * 0.15;
+        const jy = y + (Math.random() - 0.5) * edge * 0.15;
+        const rr = Math.sqrt(jx*jx + jy*jy);
+        if (rr < rBore + edge * 0.5) continue;       // inside bore
+        if (rr > ra + edge) continue;                // safely outside tip
+        if (!pointInRing(jx, jy, outline)) continue; // in tooth space
+        if (tooClose(jx, jy)) continue;
+        bucketAdd(jx, jy);
+        nodes.push(jx, jy);
       }
     }
-    return { nodes, tris, nRad, nTan, nNodes, nEl };
+
+    // 4) Delaunate.
+    const coords = new Float64Array(nodes);
+    const D = Delaunator.from(
+      Array.from({ length: nodes.length / 2 }, (_, i) => [nodes[2*i], nodes[2*i+1]])
+    );
+    const rawTri = D.triangles;
+
+    // 5) Cull triangles whose centroid is outside the gear outline or inside
+    //    the bore. Delaunator produces a convex hull, so we must remove the
+    //    bore hole and any tooth-space overhang.
+    const tris = [];
+    for (let t = 0; t < rawTri.length; t += 3) {
+      const a = rawTri[t], b = rawTri[t+1], c = rawTri[t+2];
+      const cx = (coords[2*a] + coords[2*b] + coords[2*c]) / 3;
+      const cy = (coords[2*a+1] + coords[2*b+1] + coords[2*c+1]) / 3;
+      const cr = Math.sqrt(cx*cx + cy*cy);
+      if (cr < rBore) continue;                       // inside bore
+      if (!pointInRing(cx, cy, outline)) continue;    // outside gear
+      // Ensure CCW winding for positive area (assemble() rejects degenerate).
+      const area2 = (coords[2*b] - coords[2*a]) * (coords[2*c+1] - coords[2*a+1])
+                  - (coords[2*c] - coords[2*a]) * (coords[2*b+1] - coords[2*a+1]);
+      if (area2 > 0) tris.push(a, b, c);
+      else           tris.push(a, c, b);
+    }
+
+    const nNodes = coords.length / 2;
+    const nEl    = tris.length / 3;
+    return {
+      nodes: coords,
+      tris: new Uint32Array(tris),
+      nRad, nTan, nNodes, nEl,
+      boreNodes, outlineNodes,
+      ra, rf, rb, r, rBore
+    };
   }
 
   function cstElement(p1, p2, p3, E, nu, thickness) {
@@ -955,22 +1131,27 @@ const FEA = (() => {
     return { u, iter };
   }
 
-  function vonMises(elems, u, E, nu) {
-    const vm = new Float64Array(elems.length);
+  function stressField(elems, u, E, nu) {
+    const n = elems.length;
+    const sxx = new Float64Array(n), syy = new Float64Array(n), sxy = new Float64Array(n);
+    const vm  = new Float64Array(n);
     const f = E / (1 - nu*nu);
-    for (let e = 0; e < elems.length; e++) {
-      const { B, n } = elems[e];
-      const ue = [u[2*n[0]], u[2*n[0]+1], u[2*n[1]], u[2*n[1]+1], u[2*n[2]], u[2*n[2]+1]];
+    for (let e = 0; e < n; e++) {
+      const { B, n: nn } = elems[e];
+      const ue = [u[2*nn[0]], u[2*nn[0]+1], u[2*nn[1]], u[2*nn[1]+1], u[2*nn[2]], u[2*nn[2]+1]];
       const ex = B[0]*ue[0] + B[2]*ue[2] + B[4]*ue[4];
       const ey = B[7]*ue[1] + B[9]*ue[3] + B[11]*ue[5];
       const gxy= B[12]*ue[0]+B[13]*ue[1]+B[14]*ue[2]+B[15]*ue[3]+B[16]*ue[4]+B[17]*ue[5];
       const sx = f * (ex + nu*ey);
       const sy = f * (nu*ex + ey);
-      const txy= f * (1-nu)/2 * gxy;
-      vm[e] = Math.sqrt(sx*sx - sx*sy + sy*sy + 3*txy*txy);
+      const tx = f * (1-nu)/2 * gxy;
+      sxx[e] = sx; syy[e] = sy; sxy[e] = tx;
+      vm[e]  = Math.sqrt(sx*sx - sx*sy + sy*sy + 3*tx*tx);
     }
-    return vm;
+    return { vm, sxx, syy, sxy };
   }
+
+  function vonMises(elems, u, E, nu) { return stressField(elems, u, E, nu).vm; }
 
   function run({ Z, m, pa, bore, face, torque_Nm, matKey, nRad = 16, nTan = 32, loadFlank = 'right' }) {
     const mat   = MATERIALS[matKey] || MATERIALS.steel;
@@ -979,28 +1160,28 @@ const FEA = (() => {
     const mesh  = buildMesh({ Z, m, pa, bore, nRad, nTan });
     const { K, elems } = assemble(mesh, E_MPa, nu, face);
 
-    // BC — pin bore (i=0, all j) via large penalty on diagonal
+    // BC — pin every bore-circle node (both DOFs) via large penalty.
     let avgDiag = 0;
     for (let i = 0; i < K.n; i++) avgDiag += (K.rows[i].get(i) || 0);
     avgDiag /= K.n;
     const penalty = 1e10 * avgDiag;
-    for (let j = 0; j < mesh.nTan; j++) {
-      const nd = j * mesh.nRad;
+    for (const nd of mesh.boreNodes) {
       addK(K, 2*nd,   2*nd,   penalty);
       addK(K, 2*nd+1, 2*nd+1, penalty);
     }
 
-    // Load — point force at pitch-point on the chosen flank, along line of action
+    // Load — apply at tooth-0's pitch-point on the chosen flank (HPSTC
+    // approximation). Tooth 0 is centered on +X; right flank at -π/(2Z).
     const F = new Float64Array(K.n);
     const rPitch     = m * Z / 2;
     const paRad      = pa * Math.PI / 180;
-    // Right flank sits at -π/(2Z); left flank at +π/(2Z).
     const flankSign  = (loadFlank === 'left') ? +1 : -1;
     const thetaPitch = flankSign * Math.PI / (2*Z);
     const px = rPitch * Math.cos(thetaPitch);
     const py = rPitch * Math.sin(thetaPitch);
-    let bestN = 0, bestD2 = Infinity;
-    for (let n = 0; n < mesh.nNodes; n++) {
+    // Restrict search to outline nodes (stress is applied on the surface).
+    let bestN = mesh.outlineNodes[0], bestD2 = Infinity;
+    for (const n of mesh.outlineNodes) {
       const dx = mesh.nodes[2*n] - px, dy = mesh.nodes[2*n+1] - py;
       const d2 = dx*dx + dy*dy;
       if (d2 < bestD2) { bestD2 = d2; bestN = n; }
@@ -1009,9 +1190,6 @@ const FEA = (() => {
     const Fn = Ft / Math.cos(paRad);               // along line of action
     const tx = -Math.sin(thetaPitch), ty = Math.cos(thetaPitch);    // tangent CCW
     const rx =  Math.cos(thetaPitch), ry = Math.sin(thetaPitch);    // radial outward
-    // Mating gear pushes this tooth INTO its flank. For right flank (-Y side of
-    // tooth), that's +tangent component + inward radial; for left flank
-    // (+Y side), the load direction is mirrored (−tangent + inward radial).
     const tSign = (loadFlank === 'left') ? -1 : +1;
     const fx = Fn * (tSign * Math.cos(paRad) * tx - Math.sin(paRad) * rx);
     const fy = Fn * (tSign * Math.cos(paRad) * ty - Math.sin(paRad) * ry);
@@ -1019,19 +1197,199 @@ const FEA = (() => {
     F[2*bestN + 1] = fy;
 
     const { u, iter } = solveCG(K, F);
-    const vm = vonMises(elems, u, E_MPa, nu);
+    const { vm, sxx, syy, sxy } = stressField(elems, u, E_MPa, nu);
+
+    // Centroids per element (cached — used by the per-tooth superposition
+    // lookup below and by the renderer for spatial queries).
+    const nEl = elems.length;
+    const cents = new Float64Array(2 * nEl);
+    for (let e = 0; e < nEl; e++) {
+      const nn = elems[e].n;
+      cents[2*e]   = (mesh.nodes[2*nn[0]]   + mesh.nodes[2*nn[1]]   + mesh.nodes[2*nn[2]])   / 3;
+      cents[2*e+1] = (mesh.nodes[2*nn[0]+1] + mesh.nodes[2*nn[1]+1] + mesh.nodes[2*nn[2]+1]) / 3;
+    }
+
+    // Spatial hash on centroids for O(1) nearest-element lookups.
+    const tau  = 2 * Math.PI / Z;
+    const cell = Math.max(mesh.ra * 0.08, 1.0);
+    const buckets = new Map();
+    const keyOf = (ix, iy) => ix * 100003 + iy;
+    for (let e = 0; e < nEl; e++) {
+      const ix = Math.floor(cents[2*e]   / cell);
+      const iy = Math.floor(cents[2*e+1] / cell);
+      const k  = keyOf(ix, iy);
+      let b = buckets.get(k); if (!b) { b = []; buckets.set(k, b); }
+      b.push(e);
+    }
+    const nearestEl = (x, y) => {
+      const ix = Math.floor(x / cell), iy = Math.floor(y / cell);
+      let best = -1, bd2 = Infinity;
+      for (let oy = -2; oy <= 2; oy++)
+        for (let ox = -2; ox <= 2; ox++) {
+          const b = buckets.get(keyOf(ix+ox, iy+oy));
+          if (!b) continue;
+          for (const ee of b) {
+            const dx = x - cents[2*ee], dy = y - cents[2*ee+1];
+            const d2 = dx*dx + dy*dy;
+            if (d2 < bd2) { bd2 = d2; best = ee; }
+          }
+        }
+      return best;
+    };
+
+    // Per-tooth influence map: influenceMap[e*Z + j] = index of the element
+    // whose centroid is nearest to R(-j·tau) · centroid(e). This lets us
+    // superpose stress contributions from all Z teeth in O(nEl·Z) per frame
+    // using rotational symmetry of the single tooth-0 solve.
+    const influenceMap = new Int32Array(nEl * Z);
+    for (let e = 0; e < nEl; e++) {
+      const cx = cents[2*e], cy = cents[2*e+1];
+      for (let j = 0; j < Z; j++) {
+        const a = -j * tau;
+        const ca = Math.cos(a), sa = Math.sin(a);
+        const rx = cx*ca - cy*sa;
+        const ry = cx*sa + cy*ca;
+        influenceMap[e*Z + j] = nearestEl(rx, ry);
+      }
+    }
 
     let maxVM = 0, maxEl = 0;
     for (let i = 0; i < vm.length; i++) if (vm[i] > maxVM) { maxVM = vm[i]; maxEl = i; }
 
-    return { mesh, u, vm, maxVM, maxEl, iter, loadNode: bestN, material: mat,
-             E_MPa, nu, torque_Nm, face, Ft, Fn, pa, loadFlank };
+    return { mesh, u, vm, sxx, syy, sxy, cents, influenceMap,
+             maxVM, maxEl, iter, loadNode: bestN, material: mat,
+             E_MPa, nu, torque_Nm, face, Ft, Fn, pa, loadFlank, Z, tau };
   }
 
   return { run, buildMesh };
 })();
 
+/* ---- 2-D rigid-body physics (Matter.js) ------------------------ */
+// Drives the FEA-view rotation kinematics from real collision geometry:
+// the driver gear is a kinematic body (angle set from driverRot each frame),
+// the driven gear is a dynamic body pinned at its centre. When teeth mesh,
+// Matter.js resolves the collision and rotates the driven body accordingly.
+// When shafts are spaced apart so teeth don't touch, the driven body just
+// coasts / sits still (no sync formula).
+const Physics = (() => {
+  const SCALE = 10;                                // 1 mm = 10 physics units
+  let engine = null, driver = null, driven = null;
+  let libsReady = false;
+
+  function libs() {
+    if (libsReady) return true;
+    if (typeof Matter === 'undefined') return false;
+    if (typeof decomp !== 'undefined') {
+      Matter.Common.setDecomp(decomp);
+    }
+    libsReady = true;
+    return true;
+  }
+
+  function rebuild({ Z1, Z2, m, pa, C }) {
+    if (!libs()) return false;
+    const { Engine, Bodies, Body, Composite, Constraint } = Matter;
+
+    engine = Engine.create();
+    engine.gravity.x = 0; engine.gravity.y = 0;
+    engine.positionIterations = 10;
+    engine.velocityIterations = 10;
+
+    const g1 = buildInvoluteGearOutline(Z1, m, pa, 0, false);
+    const g2 = buildInvoluteGearOutline(Z2, m, pa, 0, false);
+    const v1 = g1.pts.map(([x, y]) => ({ x: x * SCALE, y: -y * SCALE }));
+    const v2 = g2.pts.map(([x, y]) => ({ x: x * SCALE, y: -y * SCALE }));
+
+    const C_px = C * SCALE;
+
+    driver = Bodies.fromVertices(0, 0, [v1], {
+      isStatic: true,                              // kinematic: we drive its angle
+      friction: 0.0, frictionStatic: 0.0, restitution: 0
+    }, true);
+
+    driven = Bodies.fromVertices(C_px, 0, [v2], {
+      friction: 0.0, frictionStatic: 0.0, restitution: 0,
+      frictionAir: 0.04,                           // light damping
+      density: 0.002
+    }, true);
+
+    // Initial phase: interlock tooth/space.
+    Body.setAngle(driven, Math.PI + Math.PI / Z2);
+
+    // Revolute pin — driven rotates freely around its centre, no translation.
+    const pin = Constraint.create({
+      pointA: { x: C_px, y: 0 },
+      bodyB:  driven,
+      pointB: { x: 0, y: 0 },
+      length: 0, stiffness: 1, damping: 0.5
+    });
+
+    Composite.add(engine.world, [driver, driven, pin]);
+    return true;
+  }
+
+  // Step the world forward. `driverAngle` is the target angle for the driver
+  // (in standard mathematical convention — CCW positive). We convert to
+  // Matter's Y-down convention by negating. Returns the driven gear's angle
+  // in standard convention (or null if physics isn't available).
+  function step(driverAngle, dtSec) {
+    if (!engine || !driver || !driven) return null;
+    const Body = Matter.Body, Engine = Matter.Engine;
+    // Matter uses Y-down screen coords; our world uses Y-up. A rotation
+    // of +θ CCW in world == -θ in Matter. We only care that driven.angle
+    // returned is negated back.
+    Body.setAngle(driver, -driverAngle);
+    // Clamp dt so a slow frame doesn't blow up the solver.
+    const dtMs = Math.min(Math.max(dtSec, 1/240), 1/30) * 1000;
+    Engine.update(engine, dtMs);
+    return -driven.angle;
+  }
+
+  function destroy() { engine = null; driver = null; driven = null; }
+  function isAvailable() { return typeof Matter !== 'undefined'; }
+
+  // Return the list of active contact points between driver and driven.
+  // Each contact is { x, y, depth } in WORLD units (Y-up, mm) — depth is the
+  // penetration magnitude in world units, which is monotonic in contact force.
+  function contacts() {
+    if (!engine || !driver || !driven) return [];
+    const pairs = engine.pairs.list;
+    const out = [];
+    for (const p of pairs) {
+      if (!p.isActive) continue;
+      const isGearPair =
+        (p.bodyA === driver && p.bodyB === driven) ||
+        (p.bodyA === driven && p.bodyB === driver) ||
+        // fromVertices produces parts[]; Matter pairs the parts.
+        (p.bodyA.parent === driver && p.bodyB.parent === driven) ||
+        (p.bodyA.parent === driven && p.bodyB.parent === driver);
+      if (!isGearPair) continue;
+      const depthPx = p.collision ? (p.collision.depth || 0) : 0;
+      if (depthPx <= 0) continue;
+      const depth = depthPx / SCALE;
+      const list = p.activeContacts || p.contacts || [];
+      for (const c of list) {
+        const v = c.vertex || c;
+        if (v == null || !Number.isFinite(v.x)) continue;
+        out.push({ x: v.x / SCALE, y: -v.y / SCALE, depth });
+      }
+    }
+    return out;
+  }
+
+  return { rebuild, step, destroy, isAvailable, contacts };
+})();
+
 /* ---- FEA dual-gear setup + animated renderer ------------------- */
+// Debounced wrapper so slider drags don't stack expensive solves.
+let _feaDebounceId = null;
+function scheduleFEA(delay = 180) {
+  if (_feaDebounceId) clearTimeout(_feaDebounceId);
+  _feaDebounceId = setTimeout(() => {
+    _feaDebounceId = null;
+    setupFEADualGear();
+  }, delay);
+}
 // Pre-solve BOTH gears once per refresh (geometry / torque / material change).
 // The stress field for each gear is then rotated into the currently-engaged
 // tooth every animation frame — so the hot zone truly moves with the contact
@@ -1049,6 +1407,25 @@ function setupFEADualGear() {
   if (!state.torques) return;
   const [nRad, nTan] = document.getElementById('feaRes').value.split(',').map(Number);
   const { T1, T2 } = state.torques;
+
+  // Cache key: any change here invalidates the solve. Slider drags that
+  // don't affect these (e.g. camera, colourmap) reuse the cached solution.
+  const key = [i.z1, i.z2, i.mod, i.pressure, i.bore1, i.bore2,
+               i.face1, i.face2, i.mat1, i.mat2, i.cdOffset,
+               Math.round(T1*1e3), Math.round(T2*1e3),
+               nRad, nTan].join('|');
+  if (state.fea && state.fea._key === key) {
+    // Rebuild physics world only if center distance changed; otherwise reuse.
+    return;
+  }
+
+  // Show a "solving…" indicator so the UI doesn't feel frozen.
+  {
+    const infoEl = document.getElementById('feaSolveInfo');
+    if (infoEl) infoEl.textContent = 'solving…';
+    const sEl = document.getElementById('feaStats');
+    if (sEl) sEl.textContent = '…';
+  }
 
   const t0 = performance.now();
   let g1, g2;
@@ -1068,7 +1445,16 @@ function setupFEADualGear() {
   const ms = performance.now() - t0;
 
   const center = i.mod * (i.z1 + i.z2) / 2 + (i.cdOffset || 0);
-  state.fea = { g1, g2, center, solvedMs: ms };
+  state.fea = { g1, g2, center, solvedMs: ms, drivenRot: null, lastStepT: 0, _key: key };
+
+  // Build the 2-D physics world so driven rotation comes from real collisions.
+  // Only rebuild if the physics-relevant geometry actually changed; otherwise
+  // reuse the existing world (preserves drivenRot so the gear doesn't jump).
+  const physKey = [i.z1, i.z2, i.mod, i.pressure, center.toFixed(4)].join('|');
+  if (state._physKey !== physKey) {
+    Physics.rebuild({ Z1: i.z1, Z2: i.z2, m: i.mod, pa: i.pressure, C: center });
+    state._physKey = physKey;
+  }
 
   const sEl = document.getElementById('feaStats');
   if (sEl) sEl.textContent =
@@ -1125,10 +1511,16 @@ function drawGearOutline(ctx, proj, cx, cy, rot, Z, m, pa, bore, matColorHex) {
   ctx.stroke();
 }
 
-// Paint the stress field on each tooth, modulated by proximity to contact line.
-function drawGearFEA(ctx, proj, cx, cy, gearRot, fea, Z, contactAngleLocal, vmax, stops) {
+// Paint the stress field on each tooth. `loads` is an array of length Z:
+// loads[k] ∈ [0, 1+] = fraction of nominal torque load carried by tooth k
+// right now, derived from geometric proximity to the mating gear's teeth.
+// Values > 1 mean interference → painted with a magenta tint.
+function drawGearFEA(ctx, proj, cx, cy, gearRot, fea, Z, loads, vmax, stops) {
+  const mesh = fea.mesh, tris = mesh.tris, nodes = mesh.nodes;
+  const { sxx, syy, sxy, influenceMap } = fea;
+  const nEl = mesh.nEl;
   const tau = 2*Math.PI / Z;
-  const mesh = fea.mesh, vm = fea.vm;
+
   const heatColor = (v) => {
     let t = v / Math.max(vmax, 1e-9);
     if (t < 0) t = 0; else if (t > 1) t = 1;
@@ -1139,36 +1531,197 @@ function drawGearFEA(ctx, proj, cx, cy, gearRot, fea, Z, contactAngleLocal, vmax
     return [c0[0]+(c1[0]-c0[0])*ff, c0[1]+(c1[1]-c0[1])*ff, c0[2]+(c1[2]-c0[2])*ff];
   };
 
-  // For every tooth, see how close its centerline currently sits to the
-  // contact direction. Cos² bell over one pitch gives a smooth handoff
-  // between adjacent teeth (both lit during transition).
-  for (let k = 0; k < Z; k++) {
-    const toothAngle = k*tau + gearRot;
-    let d = toothAngle - contactAngleLocal;
-    d = ((d % (2*Math.PI)) + 3*Math.PI) % (2*Math.PI) - Math.PI;
-    if (Math.abs(d) >= tau) continue;
-    const fade = Math.pow(Math.cos(d * Math.PI / (2*tau)), 2);
-    if (fade < 0.02) continue;
-
-    const rotK = toothAngle;                       // FEA mesh has tooth at θ=0
-    const cR = Math.cos(rotK), sR = Math.sin(rotK);
-    ctx.globalAlpha = fade;
-    for (let e = 0; e < mesh.nEl; e++) {
-      const n1 = mesh.tris[3*e], n2 = mesh.tris[3*e+1], n3 = mesh.tris[3*e+2];
-      const l1x = mesh.nodes[2*n1], l1y = mesh.nodes[2*n1+1];
-      const l2x = mesh.nodes[2*n2], l2y = mesh.nodes[2*n2+1];
-      const l3x = mesh.nodes[2*n3], l3y = mesh.nodes[2*n3+1];
-      const [a, b] = proj(cx + l1x*cR - l1y*sR, cy + l1x*sR + l1y*cR);
-      const [c, d2]= proj(cx + l2x*cR - l2y*sR, cy + l2x*sR + l2y*cR);
-      const [f, g] = proj(cx + l3x*cR - l3y*sR, cy + l3x*sR + l3y*cR);
-      const [cr, cg, cb] = heatColor(vm[e]);
-      ctx.fillStyle = `rgb(${(cr*255)|0},${(cg*255)|0},${(cb*255)|0})`;
-      ctx.beginPath();
-      ctx.moveTo(a, b); ctx.lineTo(c, d2); ctx.lineTo(f, g); ctx.closePath();
-      ctx.fill();
-    }
+  // Precompute rotation cos/sin per tooth index (for tensor rotation of
+  // tooth-j's contribution back into the world/gear-local frame).
+  const cosJ = new Float64Array(Z), sinJ = new Float64Array(Z);
+  for (let j = 0; j < Z; j++) {
+    cosJ[j] = Math.cos(j * tau);
+    sinJ[j] = Math.sin(j * tau);
   }
-  ctx.globalAlpha = 1;
+
+  // Peak load — for the magenta interference tint.
+  let peakLoad = 0;
+  for (let k = 0; k < Z; k++) if (loads[k] > peakLoad) peakLoad = loads[k];
+  const tint = (peakLoad > 1.0) ? Math.min((peakLoad - 1) * 0.6, 0.55) : 0;
+
+  // Per-element tensor superposition: stress at element e is the weighted
+  // sum over all teeth j of the tooth-0 stress evaluated at R(-j·τ)·p_e,
+  // then rotated back by R(j·τ). Rotational symmetry + single solve.
+  const cRot = Math.cos(gearRot), sRot = Math.sin(gearRot);
+  for (let e = 0; e < nEl; e++) {
+    let Sxx = 0, Syy = 0, Sxy = 0;
+    for (let j = 0; j < Z; j++) {
+      const w = loads[j];
+      if (!w || w < 0.005) continue;
+      const eRef = influenceMap[e*Z + j];
+      if (eRef < 0) continue;
+      const s_xx = sxx[eRef], s_yy = syy[eRef], s_xy = sxy[eRef];
+      // Rotate 2-D stress tensor by j·τ: σ' = R σ Rᵀ
+      const c = cosJ[j], s = sinJ[j];
+      const c2 = c*c, s2 = s*s, cs = c*s;
+      Sxx += w * (c2*s_xx - 2*cs*s_xy + s2*s_yy);
+      Syy += w * (s2*s_xx + 2*cs*s_xy + c2*s_yy);
+      Sxy += w * (cs*(s_xx - s_yy) + (c2 - s2)*s_xy);
+    }
+    const vm = Math.sqrt(Sxx*Sxx - Sxx*Syy + Syy*Syy + 3*Sxy*Sxy);
+    let [cr, cg, cb] = heatColor(vm);
+    if (tint > 0) {
+      cr = cr*(1-tint) + 0.95*tint;
+      cg = cg*(1-tint) + 0.10*tint;
+      cb = cb*(1-tint) + 0.75*tint;
+    }
+
+    const n1 = tris[3*e], n2 = tris[3*e+1], n3 = tris[3*e+2];
+    const l1x = nodes[2*n1],   l1y = nodes[2*n1+1];
+    const l2x = nodes[2*n2],   l2y = nodes[2*n2+1];
+    const l3x = nodes[2*n3],   l3y = nodes[2*n3+1];
+    const [a, b]  = proj(cx + l1x*cRot - l1y*sRot, cy + l1x*sRot + l1y*cRot);
+    const [c2p, d2] = proj(cx + l2x*cRot - l2y*sRot, cy + l2x*sRot + l2y*cRot);
+    const [f, g]  = proj(cx + l3x*cRot - l3y*sRot, cy + l3x*sRot + l3y*cRot);
+    ctx.fillStyle = `rgb(${(cr*255)|0},${(cg*255)|0},${(cb*255)|0})`;
+    ctx.beginPath();
+    ctx.moveTo(a, b); ctx.lineTo(c2p, d2); ctx.lineTo(f, g); ctx.closePath();
+    ctx.fill();
+  }
+}
+
+// Compute per-tooth load fractions from the REAL Matter.js contacts.
+// Each contact's penetration depth is a monotonic proxy for the normal
+// contact force; we bin contacts by tooth angular index and normalise so
+// the per-tooth sum equals globalFactor (from the distance-band gate).
+// `contacts` = array of { x, y, depth } in world (Y-up, mm).
+// `cxGear`, `cyGear` = world centre of the gear being loaded.
+// `Z` = tooth count; `rotGear` = gear rotation angle; `ra` = tip radius.
+function computeToothLoadsFromContacts(contacts, cxGear, cyGear, Z, rotGear, ra, globalFactor) {
+  const loads = new Float64Array(Z);
+  if (globalFactor <= 0 || !contacts || contacts.length === 0) return loads;
+
+  const tau = 2 * Math.PI / Z;
+  // A contact is "on this gear" if its world position is within the gear's
+  // tip-circle radius (plus a small slack for penetration into the mating).
+  const rMax = ra * 1.02;
+
+  let totalW = 0;
+  for (const c of contacts) {
+    const dx = c.x - cxGear, dy = c.y - cyGear;
+    const r  = Math.sqrt(dx*dx + dy*dy);
+    if (r > rMax) continue;                        // contact lies on other gear
+    const ang = Math.atan2(dy, dx) - rotGear;      // gear-local angle
+    // Nearest tooth index (tooth 0 centreline sits at local θ=0).
+    let k = Math.round(ang / tau);
+    k = ((k % Z) + Z) % Z;
+    // Weight by penetration depth (∝ contact force in a penalty contact solver).
+    // A small radial-position bias (r ≥ pitch radius ≈ ra - m) favours flank
+    // contacts over root contacts, but simple linear works well in practice.
+    const w = Math.max(c.depth, 1e-6);
+    loads[k] += w;
+    totalW  += w;
+  }
+
+  if (totalW > 0) {
+    const norm = globalFactor / totalW;
+    for (let k = 0; k < Z; k++) loads[k] *= norm;
+  }
+  return loads;
+}
+
+// Returns true if any driver tooth is currently penetrating the driven
+// gear's tooth region near a driven tooth (i.e. an actual flank contact).
+// Geometry: driver tip at (x1,y1); distance from driven centre (C,0) must
+// be inside the driven tip circle (ra2) AND angularly close to a driven
+// tooth centreline (within ~1/4 of the tooth pitch, so the driver tip is
+// pressing on the tooth body rather than sitting inside a gap).
+function teethInContact(rot1, rot2, z1, z2, ra1, ra2, rf2, C) {  const tau1 = 2 * Math.PI / z1;
+  const tau2 = 2 * Math.PI / z2;
+  const angTol = tau2 * 0.5;                     // half a pitch → tooth body
+  for (let k = 0; k < z1; k++) {
+    const a1 = k * tau1 + rot1;
+    const x1 = ra1 * Math.cos(a1);
+    if (x1 <= 0) continue;                       // not facing gear 2
+    const y1 = ra1 * Math.sin(a1);
+    const dx = x1 - C, dy = y1;
+    const rFromC = Math.sqrt(dx*dx + dy*dy);
+    if (rFromC > ra2) continue;                  // outside driven tip circle
+    if (rFromC < rf2) continue;                  // below driven root → gap
+    const angFromC = Math.atan2(dy, dx);         // angle around gear 2 centre
+    // nearest driven tooth centreline angle
+    let best = Infinity;
+    for (let j = 0; j < z2; j++) {
+      const a2 = j * tau2 + rot2;
+      let d = angFromC - a2;
+      d = Math.atan2(Math.sin(d), Math.cos(d));
+      if (Math.abs(d) < best) best = Math.abs(d);
+    }
+    if (best < angTol) return true;
+  }
+  return false;
+}
+
+// Pan/zoom state for the 2-D FEA canvas. zoom is multiplicative on the
+// auto-fit scale; panX/panY are in WORLD units and shift the view centre.
+const feaView = { zoom: 1, panX: 0, panY: 0, _installed: false };
+
+function installFEAViewHandlers() {
+  const canvas = document.getElementById('feaCanvas');
+  if (!canvas || feaView._installed) return;
+  feaView._installed = true;
+
+  // Wheel → zoom toward cursor. Positive deltaY = zoom out.
+  canvas.addEventListener('wheel', (ev) => {
+    ev.preventDefault();
+    const fea = state.fea;
+    if (!fea || !fea._view) return;
+    const v = fea._view;
+    const rect = canvas.getBoundingClientRect();
+    const px = ev.clientX - rect.left;
+    const py = ev.clientY - rect.top;
+    // World coords under cursor BEFORE zoom change.
+    const wx = (px - v.tpx) / v.s;
+    const wy = -(py - v.tpy) / v.s;
+    const factor = Math.exp(-ev.deltaY * 0.0015);
+    const newZoom = Math.min(Math.max(feaView.zoom * factor, 0.2), 40);
+    // Solve for new pan so that wx,wy still maps to px,py at newZoom.
+    // With s' = sFit*newZoom and the same pad, the centre shifts s.t.
+    // px = Wc/2 - s'*((leftX+rightX)/2 + panX') + s'*wx  →  rearrange.
+    const Wc = canvas.clientWidth, Hc = canvas.clientHeight;
+    const sNew = v.sFit * newZoom;
+    const cxW = wx - (px - Wc/2) / sNew;
+    const cyW = wy + (py - Hc/2) / sNew;
+    feaView.panX = cxW - (v.leftX + v.rightX) / 2;
+    feaView.panY = cyW - (v.topY  + v.botY)   / 2;
+    feaView.zoom = newZoom;
+    renderFEAFrame();
+  }, { passive: false });
+
+  // Drag → pan.
+  let dragging = false, lastX = 0, lastY = 0;
+  canvas.addEventListener('mousedown', (ev) => {
+    dragging = true; lastX = ev.clientX; lastY = ev.clientY;
+    canvas.style.cursor = 'grabbing';
+  });
+  window.addEventListener('mouseup', () => {
+    dragging = false; canvas.style.cursor = 'grab';
+  });
+  window.addEventListener('mousemove', (ev) => {
+    if (!dragging) return;
+    const fea = state.fea;
+    if (!fea || !fea._view) return;
+    const dx = ev.clientX - lastX;
+    const dy = ev.clientY - lastY;
+    lastX = ev.clientX; lastY = ev.clientY;
+    feaView.panX -= dx / fea._view.s;
+    feaView.panY += dy / fea._view.s;                // screen-Y-down → world-Y-up
+    renderFEAFrame();
+  });
+
+  // Double-click → reset.
+  canvas.addEventListener('dblclick', () => {
+    feaView.zoom = 1; feaView.panX = 0; feaView.panY = 0;
+    renderFEAFrame();
+  });
+
+  canvas.style.cursor = 'grab';
+  canvas.title = 'scroll = zoom · drag = pan · double-click = reset';
 }
 
 // Called every animation frame when feaEnable is on.
@@ -1176,6 +1729,7 @@ function renderFEAFrame() {
   const canvas = document.getElementById('feaCanvas');
   const fea = state.fea;
   if (!canvas || !fea || !state.inputs) return;
+  installFEAViewHandlers();
 
   const Wc = canvas.clientWidth, Hc = canvas.clientHeight;
   const dpr = window.devicePixelRatio || 1;
@@ -1193,24 +1747,73 @@ function renderFEAFrame() {
   const ra1 = r1 + m, ra2 = r2 + m;                // tip radii (for framing)
   const C  = fea.center;
 
+  // ---- per-frame collision / engagement state (NOT torque-only) ----
+  // Same logic as the 3-D detectContact(): distance-based mesh quality.
+  const idealC     = m * (i.z1 + i.z2) / 2;
+  const err        = C - idealC;                    // +: too far, -: interfering
+  const backlashTol  = 0.08 * m;
+  const disengageTol = 0.60 * m;
+  const interfereTol = 0.30 * m;
+  let globalFactor = 1.0, contactLabel = '', contactColor = '#22c55e';
+  if (err > disengageTol) {
+    globalFactor = Math.max(1 - Math.min((err - disengageTol)/disengageTol, 1), 0);
+    contactLabel = `DISENGAGED  ΔC=+${err.toFixed(2)}mm`;
+    contactColor = '#64748b';
+  } else if (err > backlashTol) {
+    globalFactor = 1 - (err - backlashTol) / (disengageTol - backlashTol);
+    contactLabel = `loose mesh  ΔC=+${err.toFixed(2)}mm`;
+    contactColor = '#f59e0b';
+  } else if (err < -interfereTol) {
+    globalFactor = Math.min((-err - interfereTol)/interfereTol + 1, 2.5);
+    contactLabel = `INTERFERENCE  ΔC=${err.toFixed(2)}mm`;
+    contactColor = '#ef4444';
+  } else {
+    contactLabel = `meshed  ΔC=${err >= 0 ? '+' : ''}${err.toFixed(3)}mm`;
+  }
+  fea._contact = { factor: globalFactor, label: contactLabel, color: contactColor, err };
+
   // World extent: both gears side by side with a little margin.
   const leftX  = -ra1 - m;
   const rightX = C + ra2 + m;
   const topY   = Math.max(ra1, ra2) + m;
   const botY   = -topY;
   const pad = 24;
-  const s = Math.min((Wc - 2*pad) / (rightX - leftX),
-                     (Hc - 2*pad) / (topY - botY));
-  const tpx = Wc/2 - s*(leftX + rightX)/2;
-  const tpy = Hc/2 + s*(topY + botY)/2;
+  const sFit = Math.min((Wc - 2*pad) / (rightX - leftX),
+                        (Hc - 2*pad) / (topY - botY));
+  // User pan/zoom state (set by mouse handlers installed once on the canvas).
+  const view = feaView;
+  const s    = sFit * view.zoom;
+  const cxW  = (leftX + rightX) / 2 + view.panX;
+  const cyW  = (topY  + botY)   / 2 + view.panY;
+  const tpx = Wc/2 - s*cxW;
+  const tpy = Hc/2 + s*cyW;
   const proj = (x, y) => [s*x + tpx, -s*y + tpy];
+  // Expose inverse transform so the wheel handler can zoom toward cursor.
+  fea._view = { s, tpx, tpy, sFit, leftX, rightX, topY, botY };
 
-  // Rotations — share driverRot (updated in animate()). Gear 2 rotates the
-  // opposite way at 1/ratio speed. Phase offset of π puts gear 2's tooth
-  // centreline at θ=π locally (i.e. facing gear 1), and an extra half-pitch
-  // makes tooth/space interlock visually.
+  // Rotations — driver is powered off driverRot; driven is driven entirely
+  // by Matter.js rigid-body collision between the tooth polygons. When the
+  // shafts are far enough apart that teeth don't touch, the driven body
+  // just coasts to a stop (no hidden sync formula).
   const rot1 = driverRot;
-  const rot2 = -driverRot * i.z1 / i.z2 + Math.PI + Math.PI / i.z2;
+  const now = performance.now();
+  const dt = fea.lastStepT ? Math.min((now - fea.lastStepT) / 1000, 1/30) : 1/60;
+  fea.lastStepT = now;
+  let rot2;
+  if (Physics.isAvailable()) {
+    const drivenAngle = Physics.step(rot1, dt);
+    if (drivenAngle === null || !Number.isFinite(drivenAngle)) {
+      // Physics world not built yet — fall back to a tentative sync angle.
+      rot2 = -driverRot * i.z1 / i.z2 + Math.PI + Math.PI / i.z2;
+    } else {
+      rot2 = drivenAngle;
+    }
+    fea.drivenRot = rot2;
+  } else {
+    // Library failed to load — fall back to hard sync so something shows.
+    rot2 = -driverRot * i.z1 / i.z2 + Math.PI + Math.PI / i.z2;
+    fea.drivenRot = rot2;
+  }
 
   const col1 = '#' + MATERIALS[i.mat1].color.toString(16).padStart(6, '0');
   const col2 = '#' + MATERIALS[i.mat2].color.toString(16).padStart(6, '0');
@@ -1224,8 +1827,36 @@ function renderFEAFrame() {
     ? heatmapState.custom
     : COLORMAPS[heatmapState.preset] || COLORMAPS.thermal;
   const vmax = Math.max(fea.g1.maxVM, fea.g2.maxVM, 1e-9);
-  drawGearFEA(ctx, proj, 0, 0, rot1, fea.g1, i.z1, 0,          vmax, stops);
-  drawGearFEA(ctx, proj, C, 0, rot2, fea.g2, i.z2, Math.PI,    vmax, stops);
+
+  // Pull REAL contact points out of the Matter.js world (post-step). Each
+  // contact has a world position and a penetration depth we use as a proxy
+  // for contact force.
+  const realContacts = Physics.isAvailable() ? Physics.contacts() : [];
+
+  // If we actually have contacts, use their summed depth to inform the
+  // engagement factor — this captures interference load more faithfully
+  // than the pure centre-distance heuristic.
+  let gFactor = globalFactor;
+  if (realContacts.length > 0) {
+    let sumDepth = 0;
+    for (const c of realContacts) sumDepth += c.depth;
+    // Reference depth ≈ small fraction of module under normal mesh.
+    const refDepth = m * 0.05;
+    const contactFactor = Math.min(Math.max(sumDepth / (refDepth * realContacts.length), 0.1), 2.5);
+    gFactor = contactFactor;
+  } else if (err > backlashTol) {
+    gFactor = 0;                                    // no contacts → no load
+  }
+  fea._contact.factor = gFactor;
+
+  // Per-tooth load fractions from the ACTUAL Matter.js contact manifold.
+  // Contacts in world are partitioned onto whichever gear they belong to
+  // (by distance from each centre) and binned by tooth angular index.
+  const loads1 = computeToothLoadsFromContacts(realContacts, 0, 0, i.z1, rot1, ra1, gFactor);
+  const loads2 = computeToothLoadsFromContacts(realContacts, C, 0, i.z2, rot2, ra2, gFactor);
+
+  drawGearFEA(ctx, proj, 0, 0, rot1, fea.g1, i.z1, loads1, vmax, stops);
+  drawGearFEA(ctx, proj, C, 0, rot2, fea.g2, i.z2, loads2, vmax, stops);
 
   // Overlay: pitch circles, line of action, contact point
   ctx.lineWidth = 1;
@@ -1255,14 +1886,31 @@ function renderFEAFrame() {
   ctx.fillStyle = '#f472b6';
   ctx.beginPath(); ctx.arc(cpx, cpy, 4, 0, 2*Math.PI); ctx.fill();
 
+  // Overlay: REAL contact points from the physics solver. Brighter = deeper
+  // penetration (more force). These are the same points driving the stress.
+  if (realContacts.length > 0) {
+    let maxD = 0;
+    for (const c of realContacts) if (c.depth > maxD) maxD = c.depth;
+    for (const c of realContacts) {
+      const [px, py] = proj(c.x, c.y);
+      const t = maxD > 0 ? c.depth / maxD : 0.5;
+      ctx.fillStyle = `rgba(250, 204, 21, ${0.4 + 0.6*t})`;
+      ctx.strokeStyle = 'rgba(15, 23, 42, 0.9)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.arc(px, py, 3 + 3*t, 0, 2*Math.PI);
+      ctx.fill();
+      ctx.stroke();
+    }
+  }
+
   // Contact-status chip
   const chip = document.getElementById('feaContactChip');
   if (chip) {
-    const idealC = m * (i.z1 + i.z2) / 2;
-    const dC = C - idealC;
-    chip.textContent =
-      `C=${C.toFixed(2)}mm  Δ=${(dC>=0?'+':'')}${dC.toFixed(2)}  ·  ` +
-      `ω₁=${(driverRot*180/Math.PI).toFixed(0)}°  ω₂=${(rot2*180/Math.PI).toFixed(0)}°`;
+    const ct = fea._contact;
+    chip.style.color = ct.color;
+    chip.style.borderColor = ct.color;
+    chip.textContent = `${ct.label}  ·  load ×${ct.factor.toFixed(2)}  ·  ${realContacts.length} contact${realContacts.length === 1 ? '' : 's'}`;
   }
 }
 
@@ -1458,7 +2106,7 @@ function refresh() {
   state.stressAnalysis = { a1, a2 };
   state.torques = { T1, T2 };
   syncScene();
-  setupFEADualGear();
+  scheduleFEA();
 }
 
 /* Tab logic */
@@ -1544,7 +2192,7 @@ $('cdOffReset').addEventListener('click', () => {
 (() => {
   const resSel = document.getElementById('feaRes');
   if (!resSel) return;
-  resSel.addEventListener('change', () => setupFEADualGear());
+  resSel.addEventListener('change', () => scheduleFEA(0));
   window.addEventListener('resize', renderFEAFrame);
 })();
 
@@ -2501,6 +3149,22 @@ function boot() {
   });
   autoCalcTorque();  // set consistent initial values
   refresh();
+  wireCreditsModal();
+}
+
+function wireCreditsModal() {
+  const modal = document.getElementById('creditsModal');
+  const btn   = document.getElementById('creditsBtn');
+  const close = document.getElementById('creditsClose');
+  if (!modal || !btn || !close) return;
+  const show = () => modal.classList.replace('hidden', 'flex');
+  const hide = () => modal.classList.replace('flex', 'hidden');
+  btn.addEventListener('click', show);
+  close.addEventListener('click', hide);
+  modal.addEventListener('click', (ev) => { if (ev.target === modal) hide(); });
+  document.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape' && !modal.classList.contains('hidden')) hide();
+  });
 }
 if (document.readyState === 'loading') {
   window.addEventListener('DOMContentLoaded', boot);
