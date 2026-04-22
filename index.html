@@ -1,0 +1,1631 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Gearbox Solver</title>
+<!-- Tailwind CSS via CDN (dev-only; fine for a single-file tool) -->
+<script src="https://cdn.tailwindcss.com"></script>
+<!-- Three.js via ES modules + importmap (r160+ requires modules) -->
+<script type="importmap">
+{
+  "imports": {
+    "three":         "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<style>
+  html, body { background: #0b1220; color: #e5e7eb; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  /* Custom range slider styling */
+  input[type="range"] { -webkit-appearance: none; appearance: none; height: 4px; background: #334155; border-radius: 9999px; outline: none; }
+  input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 16px; height: 16px; border-radius: 9999px; background: #38bdf8; cursor: pointer; border: 2px solid #0b1220; box-shadow: 0 0 0 1px #38bdf8; }
+  input[type="range"]::-moz-range-thumb { width: 16px; height: 16px; border-radius: 9999px; background: #38bdf8; cursor: pointer; border: 2px solid #0b1220; }
+  /* Tooltip styles */
+  .tip { position: relative; display: inline-flex; align-items: center; cursor: help; }
+  .tip .tip-body { visibility: hidden; opacity: 0; transition: opacity .15s ease-in-out; position: absolute; z-index: 40; bottom: 125%; left: 50%; transform: translateX(-50%); min-width: 220px; max-width: 280px; background: #111827; color: #e5e7eb; font-size: 12px; line-height: 1.35; padding: 8px 10px; border: 1px solid #1f2937; border-radius: 8px; box-shadow: 0 10px 20px rgba(0,0,0,.4); white-space: normal; }
+  .tip:hover .tip-body, .tip:focus-within .tip-body { visibility: visible; opacity: 1; }
+  /* Auto badge chip */
+  .chip { display: inline-block; background: #0c4a6e; color: #7dd3fc; border: 1px solid #0369a1; border-radius: 9999px; font-weight: 600; pointer-events: none; }
+  /* Tabs */
+  .tab-btn.active { background: #1e293b; color: #38bdf8; border-color: #38bdf8; }
+  /* Scrollbar */
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb { background: #1f2937; border-radius: 8px; }
+  ::-webkit-scrollbar-track { background: #0b1220; }
+  /* Stall overlay pulse */
+  @keyframes stallPulse { 0%,100% { opacity: .75; } 50% { opacity: 1; } }
+  .stall-pulse { animation: stallPulse 1.2s infinite; }
+  /* Card */
+  .card { background: #0f172a; border: 1px solid #1f2937; border-radius: 14px; }
+  .chip { background: #111827; border: 1px solid #1f2937; border-radius: 9999px; padding: 2px 8px; font-size: 11px; color: #94a3b8; }
+  .label-row { display:flex; justify-content: space-between; align-items:center; gap:.5rem; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+</style>
+</head>
+<body class="min-h-screen">
+
+<!-- =========================================================
+     HEADER
+========================================================= -->
+<header class="border-b border-slate-800 bg-slate-950/70 backdrop-blur sticky top-0 z-30">
+  <div class="max-w-[1600px] mx-auto px-4 py-3 flex items-center justify-between gap-4 flex-wrap">
+    <div class="flex items-center gap-3">
+      <div class="w-9 h-9 rounded-lg bg-gradient-to-br from-sky-400 to-indigo-500 grid place-items-center shadow-lg shadow-sky-500/20">
+        <!-- simple gear svg -->
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" class="w-6 h-6 text-slate-900" fill="currentColor"><path d="M19.14 12.94a7.97 7.97 0 0 0 0-1.88l2.03-1.58a.5.5 0 0 0 .12-.64l-1.92-3.32a.5.5 0 0 0-.6-.22l-2.39.96a7.98 7.98 0 0 0-1.62-.94l-.36-2.54A.5.5 0 0 0 13.9 2h-3.8a.5.5 0 0 0-.5.42l-.36 2.54c-.57.23-1.11.54-1.62.94l-2.39-.96a.5.5 0 0 0-.6.22L2.71 8.48a.5.5 0 0 0 .12.64l2.03 1.58a7.97 7.97 0 0 0 0 1.88L2.83 14.16a.5.5 0 0 0-.12.64l1.92 3.32a.5.5 0 0 0 .6.22l2.39-.96c.51.4 1.05.71 1.62.94l.36 2.54c.05.24.26.42.5.42h3.8c.24 0 .45-.18.5-.42l.36-2.54c.57-.23 1.11-.54 1.62-.94l2.39.96c.22.09.47 0 .6-.22l1.92-3.32a.5.5 0 0 0-.12-.64l-2.03-1.58ZM12 15.5A3.5 3.5 0 1 1 12 8.5a3.5 3.5 0 0 1 0 7Z"/></svg>
+      </div>
+      <div>
+        <h1 class="text-lg sm:text-xl font-semibold tracking-tight">Gearbox Solver</h1>
+        <p class="text-xs text-slate-400">Design, calculate and visualize two-gear transmissions in real time.</p>
+      </div>
+    </div>
+    <div class="flex items-center gap-2">
+      <span class="chip">Bidirectional solver</span>
+      <span class="chip">Three.js</span>
+      <span class="chip">Involute teeth</span>
+    </div>
+  </div>
+</header>
+
+<!-- =========================================================
+     MAIN LAYOUT
+========================================================= -->
+<main class="max-w-[1600px] mx-auto p-4 grid grid-cols-12 gap-4">
+
+  <!-- ======= LEFT SIDEBAR : GEAR CONFIG ======= -->
+  <aside class="col-span-12 lg:col-span-3 card p-4 space-y-4">
+    <h2 class="font-semibold text-slate-200 flex items-center gap-2">
+      <span class="w-2 h-2 rounded-full bg-sky-400"></span> Gear Configuration
+    </h2>
+
+    <!-- Design mode -->
+    <div>
+      <div class="label-row">
+        <label class="text-sm text-slate-300">Design mode
+          <span class="tip ml-1 text-slate-500">ⓘ<span class="tip-body">
+            <b>Free</b>: pick Z₁, Z₂, module directly.<br>
+            <b>Fixed shaft</b>: pick ratio + center distance + module; Z₁/Z₂ auto-solved to nearest integers that fit.
+          </span></span>
+        </label>
+      </div>
+      <select id="designMode" class="mt-1 w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-sm">
+        <option value="free">Free (pick teeth)</option>
+        <option value="fixed">Fixed shaft (ratio + distance)</option>
+      </select>
+    </div>
+
+    <!-- Fixed-shaft targets (hidden unless designMode === 'fixed') -->
+    <div id="fixedShaftWrap" class="hidden p-3 rounded-lg bg-slate-900/60 border border-sky-900 space-y-2">
+      <h3 class="text-sm font-medium text-sky-300">Fixed-shaft targets</h3>
+      <div class="grid grid-cols-2 gap-2">
+        <label class="text-xs text-slate-400">Target ratio
+          <span class="tip text-slate-500">ⓘ<span class="tip-body">Desired Z₂/Z₁. e.g. 3 → output spins 3× slower.</span></span>
+          <input id="tgtRatio" type="number" min="0.1" max="30" step="0.01" value="3" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm">
+        </label>
+        <label class="text-xs text-slate-400">Center distance (mm)
+          <span class="tip text-slate-500">ⓘ<span class="tip-body">Distance between shaft centers: C = m(Z₁+Z₂)/2.</span></span>
+          <input id="tgtCenter" type="number" min="5" max="500" step="0.1" value="48" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm">
+        </label>
+      </div>
+      <div class="text-xs space-y-1 pt-1 border-t border-slate-800">
+        <div class="flex justify-between"><span class="text-slate-400">Solved Z₁ / Z₂</span><span id="outSolvedZ" class="mono text-sky-300">–</span></div>
+        <div class="flex justify-between"><span class="text-slate-400">Achieved ratio</span><span id="outSolvedRatio" class="mono">–</span></div>
+        <div class="flex justify-between"><span class="text-slate-400">Achieved center</span><span id="outSolvedCenter" class="mono">–</span></div>
+        <div class="flex justify-between"><span class="text-slate-400">Error</span><span id="outSolvedErr" class="mono text-amber-300">–</span></div>
+      </div>
+      <p class="text-[11px] text-slate-500 leading-snug">Adjust the <b>module</b> below to minimise center-distance error. Teeth are always integer.</p>
+    </div>
+
+    <!-- Gear type -->
+    <div>
+      <div class="label-row">
+        <label class="text-sm text-slate-300">Gear type
+          <span class="tip ml-1 text-slate-500">ⓘ
+            <span class="tip-body">
+              <b>Spur</b>: parallel shafts, simplest, noisy.<br>
+              <b>Helical/Herringbone</b>: parallel shafts, angled teeth, quieter, higher load.<br>
+              <b>Miter</b>: 90° shafts with 1:1 ratio.<br>
+              <b>Bevel</b>: intersecting shafts at user angle.
+            </span>
+          </span>
+        </label>
+      </div>
+      <select id="gearType" class="mt-1 w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-sm">
+        <option value="spur">Spur</option>
+        <option value="helical">Helical</option>
+        <option value="herringbone">Herringbone</option>
+        <option value="miter">Miter (90°)</option>
+        <option value="bevel">Bevel</option>
+      </select>
+    </div>
+
+    <!-- Bevel/helical extra -->
+    <div id="bevelAngleWrap" class="hidden">
+      <label class="text-sm text-slate-300">Shaft angle (deg)
+        <span class="tip ml-1 text-slate-500">ⓘ<span class="tip-body">Angle between the two shafts. 90° is typical, but bevel gears can be designed for any angle.</span></span>
+      </label>
+      <input id="shaftAngle" type="number" min="30" max="150" value="90" class="mt-1 w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-sm">
+    </div>
+
+    <div id="helixAngleWrap" class="hidden">
+      <label class="text-sm text-slate-300">Helix angle (deg)
+        <span class="tip ml-1 text-slate-500">ⓘ<span class="tip-body">Angle of helical teeth. 15–30° common. Higher = smoother but more axial thrust.</span></span>
+      </label>
+      <input id="helixAngle" type="number" min="0" max="45" value="20" class="mt-1 w-full bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-sm">
+    </div>
+
+    <!-- Driver gear -->
+    <div class="p-3 rounded-lg bg-slate-900/60 border border-slate-800 space-y-2">
+      <div class="flex items-center justify-between">
+        <h3 class="text-sm font-medium text-sky-300">Driver gear (motor)</h3>
+        <span class="chip">pinion</span>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <label class="text-xs text-slate-400">Teeth Z₁
+          <span class="tip text-slate-500">ⓘ<span class="tip-body">Number of teeth on the driver gear. Minimum ~12–17 to avoid undercut.</span></span>
+          <input id="z1" type="number" min="6" max="200" value="16" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm">
+        </label>
+        <label class="text-xs text-slate-400">Module m (mm)
+          <span class="tip text-slate-500">ⓘ<span class="tip-body">Size of a tooth. Pitch diameter d = m × Z. Both meshing gears must share the same module.</span></span>
+          <input id="mod" type="number" min="0.2" max="10" step="0.1" value="1.5" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm">
+        </label>
+        <label class="text-xs text-slate-400">Face width (mm)
+          <span class="tip text-slate-500">ⓘ<span class="tip-body">Thickness of the gear along its axis. Typical 6–12× module.</span></span>
+          <input id="face1" type="number" min="1" max="100" value="10" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm">
+        </label>
+        <label class="text-xs text-slate-400">Bore Ø (mm)
+          <span class="tip text-slate-500">ⓘ<span class="tip-body">Shaft hole diameter through the gear center.</span></span>
+          <input id="bore1" type="number" min="1" max="30" step="0.5" value="5" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm">
+        </label>
+      </div>
+    </div>
+
+    <!-- Driven gear -->
+    <div class="p-3 rounded-lg bg-slate-900/60 border border-slate-800 space-y-2">
+      <div class="flex items-center justify-between">
+        <h3 class="text-sm font-medium text-emerald-300">Driven gear (output)</h3>
+        <span class="chip">wheel</span>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <label class="text-xs text-slate-400">Teeth Z₂
+          <input id="z2" type="number" min="6" max="300" value="48" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm">
+        </label>
+        <label class="text-xs text-slate-400">Face width (mm)
+          <input id="face2" type="number" min="1" max="100" value="10" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm">
+        </label>
+        <label class="text-xs text-slate-400">Bore Ø (mm)
+          <input id="bore2" type="number" min="1" max="30" step="0.5" value="8" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm">
+        </label>
+        <label class="text-xs text-slate-400">Pressure angle (°)
+          <span class="tip text-slate-500">ⓘ<span class="tip-body">Most gears use 20°. Higher = stronger teeth, lower = smoother meshing.</span></span>
+          <input id="pressure" type="number" min="14.5" max="25" step="0.5" value="20" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm">
+        </label>
+      </div>
+    </div>
+
+    <!-- Auto-computed geometry readout -->
+    <div class="p-3 rounded-lg bg-slate-900/60 border border-slate-800 space-y-1.5 text-xs">
+      <div class="flex justify-between"><span class="text-slate-400">Gear ratio (Z₂/Z₁)</span><span id="outRatio" class="mono text-sky-300">–</span></div>
+      <div class="flex justify-between"><span class="text-slate-400">Pitch Ø driver</span><span id="outPd1" class="mono">–</span></div>
+      <div class="flex justify-between"><span class="text-slate-400">Pitch Ø driven</span><span id="outPd2" class="mono">–</span></div>
+      <div class="flex justify-between"><span class="text-slate-400">Center distance</span><span id="outCenter" class="mono">–</span></div>
+      <div class="flex justify-between"><span class="text-slate-400">Shaft angle</span><span id="outShaftAngle" class="mono">–</span></div>
+    </div>
+
+    <!-- Efficiency slider -->
+    <div>
+      <div class="label-row">
+        <label class="text-sm text-slate-300">Efficiency η
+          <span class="tip text-slate-500">ⓘ<span class="tip-body">Fraction of power transmitted. Real spur meshes ~95–98%, plastic printed gears ~70–90%.</span></span>
+        </label>
+        <span id="effVal" class="mono text-xs text-slate-400">92%</span>
+      </div>
+      <input id="eff" type="range" min="70" max="98" value="92" class="w-full mt-1">
+    </div>
+
+    <!-- Idler -->
+    <label class="flex items-center gap-2 text-sm text-slate-300">
+      <input id="idler" type="checkbox" class="accent-sky-400">
+      Add idler gear (direction reversal)
+      <span class="tip text-slate-500">ⓘ<span class="tip-body">An idler gear sits between driver and driven; it reverses output rotation but does not change the overall ratio.</span></span>
+    </label>
+
+    <!-- Material & stress analysis -->
+    <div class="p-3 rounded-lg bg-slate-900/60 border border-amber-900/60 space-y-2">
+      <div class="flex items-center justify-between">
+        <h3 class="text-sm font-medium text-amber-300">Material & Stress</h3>
+        <span class="chip" style="background:#451a03;color:#fbbf24;border-color:#92400e;">analytical</span>
+      </div>
+      <div class="grid grid-cols-2 gap-2">
+        <label class="text-xs text-slate-400">Driver material
+          <select id="mat1" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm">
+            <option value="pla">PLA (3D-print)</option>
+            <option value="abs">ABS (3D-print)</option>
+            <option value="al" selected>Aluminum 6061</option>
+            <option value="steel">Steel 1045</option>
+          </select>
+        </label>
+        <label class="text-xs text-slate-400">Driven material
+          <select id="mat2" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm">
+            <option value="pla">PLA (3D-print)</option>
+            <option value="abs">ABS (3D-print)</option>
+            <option value="al" selected>Aluminum 6061</option>
+            <option value="steel">Steel 1045</option>
+          </select>
+        </label>
+      </div>
+      <label class="flex items-center gap-2 text-xs text-slate-300 pt-1">
+        <input id="stressView" type="checkbox" class="accent-amber-400">
+        Color-code by safety factor
+        <span class="tip text-slate-500">ⓘ<span class="tip-body">Tints each gear by its lowest safety factor: green ≥ 3, yellow 1.5–3, red &lt; 1.5.</span></span>
+      </label>
+      <label class="flex items-center gap-2 text-xs text-slate-300">
+        <input id="showKey" type="checkbox" class="accent-amber-400" checked>
+        Draw keyway on shaft bore
+        <span class="tip text-slate-500">ⓘ<span class="tip-body">Adds a DIN 6885 keyway slot to the bore. Key dims auto-sized to shaft diameter.</span></span>
+      </label>
+      <p class="text-[10px] text-slate-500 leading-snug">Closed-form: Lewis bending + keyway shear/bearing + shaft torsion. For true FEA export STL and open in FreeCAD FEM / CalculiX.</p>
+    </div>
+
+  </aside>
+
+  <!-- ======= CENTER : 3D + SOLVER ======= -->
+  <section class="col-span-12 lg:col-span-9 space-y-4">
+
+    <!-- 3D preview card -->
+    <div class="card overflow-hidden relative">
+      <div class="flex items-center justify-between px-4 py-2 border-b border-slate-800">
+        <h2 class="font-semibold text-slate-200 flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-emerald-400"></span> 3D Preview
+        </h2>
+        <div class="flex items-center gap-2">
+          <button id="playBtn" class="text-xs px-3 py-1 rounded-lg bg-sky-500/20 border border-sky-500/40 text-sky-300 hover:bg-sky-500/30">⏸ Pause</button>
+          <div class="flex items-center gap-2">
+            <span class="text-xs text-slate-400">Speed</span>
+            <input id="animSpeed" type="range" min="0.1" max="3" step="0.1" value="1" class="w-24">
+            <span id="animSpeedVal" class="text-xs mono text-slate-400">1.0×</span>
+          </div>
+        </div>
+      </div>
+      <div id="viewport" class="relative w-full" style="height: 560px;">
+        <div id="stallOverlay" class="hidden absolute inset-0 grid place-items-center bg-red-900/30 backdrop-blur-[2px] z-10">
+          <div class="stall-pulse px-4 py-2 rounded-lg bg-red-600/90 text-white font-semibold shadow-xl">⚠ STALLED — load exceeds motor capacity</div>
+        </div>
+      </div>
+      <div class="px-4 py-2 border-t border-slate-800 text-xs text-slate-400 flex justify-between">
+        <span>Drag to orbit • Scroll to zoom • Right-drag to pan</span>
+        <span id="rpmLive" class="mono">–</span>
+      </div>
+    </div>
+
+    <!-- Solver tabs -->
+    <div class="card">
+      <div class="flex border-b border-slate-800">
+        <button data-tab="motor" class="tab-btn active flex-1 text-sm py-2.5 border-b-2 border-transparent transition">Design from Motor</button>
+        <button data-tab="output" class="tab-btn flex-1 text-sm py-2.5 border-b-2 border-transparent transition">Design from Output</button>
+      </div>
+
+      <!-- Tab 1 -->
+      <div id="tab-motor" class="p-4 space-y-3">
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <label class="text-xs text-slate-400">Rated RPM
+            <span class="tip text-slate-500">ⓘ<span class="tip-body">Motor speed at rated load. Changing this or Rated Power auto-updates Rated Torque via T = P / ω.</span></span>
+            <input id="mRpm" type="number" min="1" value="90" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-sm">
+          </label>
+          <label class="text-xs text-slate-400">Rated power (W)
+            <span class="tip text-slate-500">ⓘ<span class="tip-body">Mechanical output power. Changing this or RPM auto-updates Rated Torque: T = P / (2π·RPM/60).</span></span>
+            <input id="mPower" type="number" min="0" step="1" value="9" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-sm">
+          </label>
+          <label class="text-xs text-slate-400">
+            Rated torque (Nm)
+            <span class="tip text-slate-500">ⓘ<span class="tip-body">Auto-calculated as T = P / ω = Rated Power / (2π·RPM/60). You can also type a value directly — it will override the auto-calc until RPM or Power changes again.</span></span>
+            <span id="torqueAutoChip" class="chip ml-1" style="font-size:10px;padding:1px 5px;">auto</span>
+            <input id="mTorque" type="number" min="0" step="0.001" value="0.955" class="mt-1 w-full bg-sky-950 border border-sky-800 rounded px-2 py-1.5 text-sm">
+          </label>
+          <label class="text-xs text-slate-400">
+            Stall torque (Nm)
+            <span class="tip text-slate-500">ⓘ<span class="tip-body">Peak torque at 0 RPM. Auto-set to 2× rated torque — a common DC motor rule of thumb. Override freely.</span></span>
+            <span id="stallAutoChip" class="chip ml-1" style="font-size:10px;padding:1px 5px;">auto 2×</span>
+            <input id="mMaxTorque" type="number" min="0" step="0.001" value="1.909" class="mt-1 w-full bg-sky-950 border border-sky-800 rounded px-2 py-1.5 text-sm">
+          </label>
+          <label class="text-xs text-slate-400">Voltage (V, optional)
+            <input id="mVolt" type="number" min="0" step="0.1" value="12" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-sm">
+          </label>
+          <label class="text-xs text-slate-400">Load torque at output (Nm)
+            <span class="tip text-slate-500">ⓘ<span class="tip-body">Resistive torque present at the output shaft. Used to check for stall: stall if load > stall_torque × ratio × η.</span></span>
+            <input id="mLoad" type="number" min="0" step="0.01" value="1" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-sm">
+          </label>
+        </div>
+        <div>
+          <div class="label-row">
+            <label class="text-sm text-slate-300">PWM / voltage control
+              <span class="tip text-slate-500">ⓘ<span class="tip-body">Simulates reducing motor drive. Approximates linear RPM & torque scaling with duty cycle.</span></span>
+            </label>
+            <span id="pwmVal" class="mono text-xs text-slate-400">100%</span>
+          </div>
+          <input id="pwm" type="range" min="0" max="100" value="100" class="w-full mt-1">
+        </div>
+      </div>
+
+      <!-- Tab 2 -->
+      <div id="tab-output" class="p-4 space-y-3 hidden">
+        <div class="grid grid-cols-2 md:grid-cols-3 gap-3">
+          <label class="text-xs text-slate-400">Desired output RPM
+            <input id="oRpm" type="number" min="0" value="60" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-sm">
+          </label>
+          <label class="text-xs text-slate-400">Output load torque (Nm)
+            <span class="tip text-slate-500">ⓘ<span class="tip-body">Torque the output shaft must deliver to the load.</span></span>
+            <input id="oTorque" type="number" min="0" step="0.01" value="5" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-sm">
+          </label>
+          <label class="text-xs text-slate-400">Desired power (W, optional)
+            <span class="tip text-slate-500">ⓘ<span class="tip-body">If left 0, computed as P = T·ω from RPM + torque.</span></span>
+            <input id="oPower" type="number" min="0" step="1" value="0" class="mt-1 w-full bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-sm">
+          </label>
+        </div>
+        <p class="text-xs text-slate-500">Gear ratio comes from the gear configuration on the left. The solver computes what the motor must provide to meet these outputs.</p>
+      </div>
+    </div>
+
+    <!-- Results table -->
+    <div class="card p-4">
+      <h2 class="font-semibold text-slate-200 flex items-center gap-2 mb-2">
+        <span class="w-2 h-2 rounded-full bg-indigo-400"></span> Live calculations
+      </h2>
+      <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2 text-sm">
+        <div class="flex justify-between p-2 rounded bg-slate-900/60 border border-slate-800"><span class="text-slate-400">Gear ratio</span><span id="rRatio" class="mono text-sky-300">–</span></div>
+        <div class="flex justify-between p-2 rounded bg-slate-900/60 border border-slate-800"><span class="text-slate-400">Torque multiplication</span><span id="rMult" class="mono">–</span></div>
+        <div class="flex justify-between p-2 rounded bg-slate-900/60 border border-slate-800"><span class="text-slate-400">Motor RPM (effective)</span><span id="rMotRpm" class="mono">–</span></div>
+        <div class="flex justify-between p-2 rounded bg-slate-900/60 border border-slate-800"><span class="text-slate-400">Motor torque available</span><span id="rMotTq" class="mono">–</span></div>
+        <div class="flex justify-between p-2 rounded bg-slate-900/60 border border-slate-800"><span class="text-slate-400">Output RPM</span><span id="rOutRpm" class="mono text-emerald-300">–</span></div>
+        <div class="flex justify-between p-2 rounded bg-slate-900/60 border border-slate-800"><span class="text-slate-400">Output torque</span><span id="rOutTq" class="mono text-emerald-300">–</span></div>
+        <div class="flex justify-between p-2 rounded bg-slate-900/60 border border-slate-800"><span class="text-slate-400">Power in</span><span id="rPin" class="mono">–</span></div>
+        <div class="flex justify-between p-2 rounded bg-slate-900/60 border border-slate-800"><span class="text-slate-400">Power out</span><span id="rPout" class="mono">–</span></div>
+        <div class="flex justify-between p-2 rounded bg-slate-900/60 border border-slate-800"><span class="text-slate-400">Efficiency losses</span><span id="rLoss" class="mono">–</span></div>
+        <div id="rWarn" class="flex justify-between p-2 rounded bg-slate-900/60 border border-slate-800 col-span-2 md:col-span-3 lg:col-span-5 text-slate-300"><span>Status</span><span class="mono text-emerald-400">OK</span></div>
+      </div>
+      <p class="text-xs text-slate-500 mt-3">
+        Formulas: <span class="mono">ratio = Z₂/Z₁</span> • <span class="mono">RPM_out = RPM_in / ratio</span> •
+        <span class="mono">T_out = T_in · ratio · η</span> • <span class="mono">P = T · 2π · RPM/60</span>
+      </p>
+    </div>
+
+    <!-- Stress analysis card -->
+    <div class="card p-4">
+      <div class="flex items-center justify-between mb-3">
+        <h2 class="font-semibold text-slate-200 flex items-center gap-2">
+          <span class="w-2 h-2 rounded-full bg-amber-400"></span> Stress Analysis
+        </h2>
+        <span id="stressVerdict" class="mono text-xs px-2 py-1 rounded bg-emerald-900/40 text-emerald-300 border border-emerald-800">SF min = –</span>
+      </div>
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-2 text-xs">
+        <div class="p-2 rounded bg-slate-900/60 border border-slate-800">
+          <div class="text-sky-300 font-medium mb-1">Driver tooth (Lewis)</div>
+          <div class="flex justify-between"><span class="text-slate-400">σ bend</span><span id="sTooth1" class="mono">–</span></div>
+          <div class="flex justify-between"><span class="text-slate-400">SF</span><span id="sfTooth1" class="mono">–</span></div>
+        </div>
+        <div class="p-2 rounded bg-slate-900/60 border border-slate-800">
+          <div class="text-emerald-300 font-medium mb-1">Driven tooth (Lewis)</div>
+          <div class="flex justify-between"><span class="text-slate-400">σ bend</span><span id="sTooth2" class="mono">–</span></div>
+          <div class="flex justify-between"><span class="text-slate-400">SF</span><span id="sfTooth2" class="mono">–</span></div>
+        </div>
+        <div class="p-2 rounded bg-slate-900/60 border border-slate-800">
+          <div class="text-sky-300 font-medium mb-1">Driver key</div>
+          <div class="flex justify-between"><span class="text-slate-400">τ shear</span><span id="sKeyS1" class="mono">–</span></div>
+          <div class="flex justify-between"><span class="text-slate-400">σ bearing</span><span id="sKeyB1" class="mono">–</span></div>
+          <div class="flex justify-between"><span class="text-slate-400">SF</span><span id="sfKey1" class="mono">–</span></div>
+        </div>
+        <div class="p-2 rounded bg-slate-900/60 border border-slate-800">
+          <div class="text-emerald-300 font-medium mb-1">Driven key</div>
+          <div class="flex justify-between"><span class="text-slate-400">τ shear</span><span id="sKeyS2" class="mono">–</span></div>
+          <div class="flex justify-between"><span class="text-slate-400">σ bearing</span><span id="sKeyB2" class="mono">–</span></div>
+          <div class="flex justify-between"><span class="text-slate-400">SF</span><span id="sfKey2" class="mono">–</span></div>
+        </div>
+        <div class="p-2 rounded bg-slate-900/60 border border-slate-800 col-span-2 md:col-span-4">
+          <div class="flex flex-wrap gap-x-6 gap-y-1">
+            <span><span class="text-slate-400">Key dims (driver):</span> <span id="keyDim1" class="mono">–</span></span>
+            <span><span class="text-slate-400">Key dims (driven):</span> <span id="keyDim2" class="mono">–</span></span>
+            <span><span class="text-slate-400">Tangential force Ft:</span> <span id="fForce" class="mono">–</span></span>
+          </div>
+        </div>
+      </div>
+      <p class="text-xs text-slate-500 mt-3">
+        Lewis: <span class="mono">σ = Ft / (F·m·Y)</span>, Y ≈ 0.484 − 2.87/Z •
+        Key shear: <span class="mono">τ = 2T / (d·L·w)</span> •
+        Key bearing: <span class="mono">σ = 4T / (d·L·h)</span> •
+        SF<sub>shear</sub> uses von-Mises <span class="mono">τ_y = 0.577·σ_y</span>.
+      </p>
+    </div>
+  </section>
+
+
+</main>
+
+<footer class="max-w-[1600px] mx-auto px-4 pb-6 text-xs text-slate-500">
+  Built as a single-file educational tool. Extend it: add multi-stage gearboxes by chaining ratios, or planetary sets by composing sun/planet/ring geometry.
+</footer>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* =============================================================
+   GEARBOX SOLVER — single-file app
+   -----------------------------------------------------------
+   Sections:
+     1. State + DOM refs
+     2. Math / solver
+     3. UI wiring + live updates
+     4. Three.js scene (gears, shafts, housing, animation)
+     5. OpenSCAD generator (chrisspen/gears library)
+   Extend by:
+     - Adding stages: compute overall ratio = Π(stage ratios),
+       apply efficiency per stage (η_total = Π η_i).
+     - Planetary: treat as ratio 1 + Zring/Zsun (carrier output).
+============================================================= */
+
+/* ---------- 1. State ---------- */
+const $ = (id) => document.getElementById(id);
+const state = {
+  mode: 'motor',              // 'motor' | 'output'
+  animating: true,
+  animSpeed: 1.0,
+  stalled: false,
+};
+
+/* ---------- 2. Math ---------- */
+// angular velocity (rad/s) from rpm
+const rpmToOmega = (rpm) => (rpm * 2 * Math.PI) / 60;
+const omegaToRpm = (w)   => (w * 60) / (2 * Math.PI);
+// Power (W) = Torque (Nm) * omega (rad/s)
+const power = (T, rpm) => T * rpmToOmega(rpm);
+
+function readInputs() {
+  const gearType   = $('gearType').value;
+  const designMode = $('designMode').value;     // 'free' | 'fixed'
+  let z1           = Math.max(1, parseFloat($('z1').value) || 1);
+  let z2           = Math.max(1, parseFloat($('z2').value) || 1);
+  const mod        = Math.max(0.1, parseFloat($('mod').value) || 1);
+
+  // Fixed-shaft mode: solve Z₁/Z₂ from (ratio, centerDist, module)
+  let tgtRatio = parseFloat($('tgtRatio').value) || 1;
+  let tgtCenter = parseFloat($('tgtCenter').value) || 0;
+  let solved = null;
+  if (designMode === 'fixed' && tgtCenter > 0 && tgtRatio > 0) {
+    // C = m(z1+z2)/2, z2 = r·z1  →  z1 = 2C / (m(1+r))
+    const sum = (2 * tgtCenter) / mod;           // z1 + z2 (real-valued)
+    const z1f = sum / (1 + tgtRatio);
+    let z1i = Math.max(6, Math.round(z1f));
+    let z2i = Math.max(6, Math.round(z1i * tgtRatio));
+    z1 = z1i; z2 = z2i;
+    const actualCenter = mod * (z1 + z2) / 2;
+    const actualRatio  = z2 / z1;
+    solved = {
+      z1, z2,
+      actualRatio,
+      actualCenter,
+      centerErr: actualCenter - tgtCenter,
+      ratioErr:  actualRatio  - tgtRatio,
+    };
+  }
+
+  const face1      = parseFloat($('face1').value) || 10;
+  const face2      = parseFloat($('face2').value) || 10;
+  const bore1      = parseFloat($('bore1').value) || 5;
+  const bore2      = parseFloat($('bore2').value) || 5;
+  const pressure   = parseFloat($('pressure').value) || 20;
+  const helix      = parseFloat($('helixAngle').value) || 0;
+  const shaftAngle = gearType === 'miter' ? 90 : (parseFloat($('shaftAngle').value) || 90);
+  const eff        = (parseFloat($('eff').value) || 92) / 100;
+  const idler      = $('idler').checked;
+
+  // Motor-side
+  const mRpm       = parseFloat($('mRpm').value) || 0;
+  const mT         = parseFloat($('mTorque').value) || 0;
+  const mTmax      = parseFloat($('mMaxTorque').value) || 0;
+  const mPower     = parseFloat($('mPower').value) || 0;
+  const pwm        = (parseFloat($('pwm').value) || 100) / 100;
+  const mLoad      = parseFloat($('mLoad').value) || 0;
+
+  // Output-side
+  const oRpm       = parseFloat($('oRpm').value) || 0;
+  const oT         = parseFloat($('oTorque').value) || 0;
+  const oPower     = parseFloat($('oPower').value) || 0;
+
+  // Material / stress
+  const mat1       = $('mat1').value;
+  const mat2       = $('mat2').value;
+  const stressView = $('stressView').checked;
+  const showKey    = $('showKey').checked;
+
+  return { gearType, designMode, tgtRatio, tgtCenter, solved,
+           z1, z2, mod, face1, face2, bore1, bore2, pressure, helix, shaftAngle,
+           eff, idler, mRpm, mT, mTmax, mPower, pwm, mLoad, oRpm, oT, oPower,
+           mat1, mat2, stressView, showKey };
+}
+
+function computeGeometry(i) {
+  // Miter forces 1:1 — warn but still compute honest ratio.
+  const ratio = i.z2 / i.z1;
+  const pd1 = i.mod * i.z1;      // pitch diameter (mm)
+  const pd2 = i.mod * i.z2;
+  const center = (pd1 + pd2) / 2;
+  return { ratio, pd1, pd2, center };
+}
+
+/* ---------- Materials & stress ---------- */
+// σy = yield (MPa), E = Young's (GPa), ρ = density (g/cm³), color for Three.js
+const MATERIALS = {
+  pla:   { name: 'PLA',           yield: 50,  E: 3.5, rho: 1.24, color: 0x6ee7b7 },
+  abs:   { name: 'ABS',           yield: 40,  E: 2.3, rho: 1.05, color: 0xfbbf24 },
+  al:    { name: 'Aluminum 6061', yield: 276, E: 69,  rho: 2.70, color: 0xcbd5e1 },
+  steel: { name: 'Steel 1045',    yield: 530, E: 200, rho: 7.85, color: 0x64748b },
+};
+
+// DIN 6885 / ISO 2491 key dimensions (w × h mm) for shaft diameter range
+function keyDims(bore) {
+  if (bore <=  8) return { w: 2, h: 2 };
+  if (bore <= 10) return { w: 3, h: 3 };
+  if (bore <= 12) return { w: 4, h: 4 };
+  if (bore <= 17) return { w: 5, h: 5 };
+  if (bore <= 22) return { w: 6, h: 6 };
+  if (bore <= 30) return { w: 8, h: 7 };
+  if (bore <= 38) return { w:10, h: 8 };
+  return { w: 12, h: 8 };
+}
+
+// Lewis form factor (AGMA approximation, 20° full-depth involute)
+function lewisY(Z) {
+  return Math.max(0.15, 0.484 - 2.87 / Math.max(Z, 12));
+}
+
+// Returns stress analysis per gear side; torque T in Nm.
+function analyseStress(T, Z, m_mm, face_mm, bore_mm, matKey) {
+  const mat = MATERIALS[matKey];
+  const pd_mm = m_mm * Z;
+  // Tangential force on tooth at pitch circle (N):
+  // T[Nm] * 1000 / (pd[mm]/2) = 2 * T * 1000 / pd  (N)
+  const Ft_N = (2 * T * 1000) / pd_mm;
+
+  // Lewis tooth bending stress (MPa). Face & module in mm, Ft in N.
+  const Y = lewisY(Z);
+  const toothSigma = Ft_N / (face_mm * m_mm * Y);   // N/mm² = MPa
+
+  // Key dims
+  const { w, h } = keyDims(bore_mm);
+  const keyLen = face_mm;   // key length = gear face width (typical)
+
+  // Key shear  : τ = 2T / (d·L·w)  [T in Nmm, dims in mm → MPa]
+  // Key bearing: σ = 4T / (d·L·h)  (half the key crushes against gear side)
+  const T_Nmm = T * 1000;
+  const keyShear   = (2 * T_Nmm) / (bore_mm * keyLen * w);
+  const keyBearing = (4 * T_Nmm) / (bore_mm * keyLen * h);
+
+  // Shaft torsion τ_max = 16T / (π·d³) (solid shaft, same material assumed)
+  const shaftShear = (16 * T_Nmm) / (Math.PI * Math.pow(bore_mm, 3));
+
+  const sy = mat.yield;
+  const tauY = 0.577 * sy;       // von-Mises shear yield
+
+  const sfTooth = sy / Math.max(toothSigma, 1e-9);
+  const sfKey   = Math.min(tauY / Math.max(keyShear, 1e-9),
+                           sy   / Math.max(keyBearing, 1e-9));
+  const sfShaft = tauY / Math.max(shaftShear, 1e-9);
+
+  return {
+    mat, Ft_N, Y,
+    toothSigma, sfTooth,
+    keyW: w, keyH: h, keyLen,
+    keyShear, keyBearing, sfKey,
+    shaftShear, sfShaft,
+    sfMin: Math.min(sfTooth, sfKey, sfShaft),
+  };
+}
+
+// Map a safety factor to an RGB color (green → yellow → red)
+function sfColor(sf) {
+  if (!isFinite(sf) || sf > 5) sf = 5;
+  if (sf < 0.2) sf = 0.2;
+  // Lerp: SF 1 → red, SF 2 → yellow, SF 3+ → green
+  const t = Math.min(Math.max((sf - 1) / 2, 0), 1);   // 0 at SF=1, 1 at SF=3
+  // HSL hue: 0° red → 60° yellow → 120° green
+  const hue = t * 120;
+  const c = new THREE.Color();
+  c.setHSL(hue / 360, 0.72, 0.55);
+  return c;
+}
+
+/**
+ * Solve the transmission.
+ * Returns output RPM/torque/power AND required motor values.
+ * If mode==='motor': motor is the source; compute output, then check stall vs mLoad.
+ * If mode==='output': desired output given; back-calculate motor requirements.
+ */
+function solve(i, geom) {
+  const r = geom.ratio;
+  const eff = i.eff;
+  let motRpm, motT, motTmax, outRpm, outT, Pin, Pout, stalled=false, note='OK';
+
+  if (state.mode === 'motor') {
+    // Effective motor after PWM scaling (simple linear model)
+    motRpm  = i.mRpm  * i.pwm;
+    motT    = i.mT    * i.pwm;          // available continuous torque
+    motTmax = i.mTmax * i.pwm;          // available peak torque
+
+    // If no load specified, the output spins at ideal no-load:
+    outRpm = motRpm / r;
+
+    // Torque delivered to the output shaft = motor_T * ratio * efficiency
+    const tAvailableAtOutput = motT * r * eff;
+    const tPeakAtOutput      = motTmax * r * eff;
+
+    if (i.mLoad > tPeakAtOutput && i.mLoad > 0) {
+      stalled = true;
+      outRpm = 0;
+      outT   = tPeakAtOutput;
+      note   = 'STALL: load exceeds peak motor torque × ratio × η';
+    } else if (i.mLoad > tAvailableAtOutput && i.mLoad > 0) {
+      // Motor can push through momentarily but will overheat / slow.
+      outT   = i.mLoad;
+      outRpm = outRpm * (tAvailableAtOutput / i.mLoad); // degrade speed linearly
+      note   = 'OVERLOAD: exceeds continuous rating — motor will heat up';
+    } else {
+      outT = Math.max(i.mLoad, 0); // delivered torque equals load (if within limits)
+      if (outT === 0) outT = tAvailableAtOutput; // show capability if no load
+    }
+
+    Pin  = power(motT, motRpm);
+    Pout = power(outT, outRpm);
+  } else {
+    // Output-driven design
+    outRpm = i.oRpm;
+    outT   = i.oT;
+    // Required motor side
+    motRpm = outRpm * r;
+    motT   = (outT / r) / eff;          // undo ratio and efficiency losses
+    motTmax = motT;                     // user-specified required peak = same
+    Pout = i.oPower > 0 ? i.oPower : power(outT, outRpm);
+    Pin  = Pout / Math.max(eff, 0.01);
+    note = 'Design target';
+  }
+
+  return { motRpm, motT, motTmax, outRpm, outT, Pin, Pout, stalled, note, ratio: r, mult: r * eff };
+}
+
+/* ---------- 3. UI wiring ---------- */
+function fmt(v, unit='', digits=2) {
+  if (!isFinite(v)) return '–';
+  return v.toFixed(digits) + (unit ? ' ' + unit : '');
+}
+function refresh() {
+  // Toggle helix/bevel extras
+  const gt = $('gearType').value;
+  $('bevelAngleWrap').classList.toggle('hidden', !(gt === 'bevel'));
+  $('helixAngleWrap').classList.toggle('hidden', !(gt === 'helical' || gt === 'herringbone'));
+
+  // Toggle design-mode extras
+  const dm = $('designMode').value;
+  $('fixedShaftWrap').classList.toggle('hidden', dm !== 'fixed');
+
+  const i = readInputs();
+
+  // In fixed-shaft mode, write solved teeth back into the Z₁/Z₂ inputs and disable them
+  const z1el = $('z1'), z2el = $('z2');
+  if (dm === 'fixed' && i.solved) {
+    z1el.value = i.solved.z1;
+    z2el.value = i.solved.z2;
+    z1el.disabled = true;
+    z2el.disabled = true;
+    z1el.classList.add('opacity-60');
+    z2el.classList.add('opacity-60');
+
+    $('outSolvedZ').textContent      = `${i.solved.z1} / ${i.solved.z2}`;
+    $('outSolvedRatio').textContent  = i.solved.actualRatio.toFixed(4) + ' : 1';
+    $('outSolvedCenter').textContent = i.solved.actualCenter.toFixed(3) + ' mm';
+    const cErr = i.solved.centerErr;
+    const rErr = i.solved.ratioErr;
+    $('outSolvedErr').textContent = `ΔC ${cErr >= 0 ? '+' : ''}${cErr.toFixed(3)} mm · Δr ${rErr >= 0 ? '+' : ''}${rErr.toFixed(3)}`;
+    $('outSolvedErr').classList.toggle('text-emerald-300', Math.abs(cErr) < 0.01);
+    $('outSolvedErr').classList.toggle('text-amber-300',  Math.abs(cErr) >= 0.01);
+  } else {
+    z1el.disabled = false;
+    z2el.disabled = false;
+    z1el.classList.remove('opacity-60');
+    z2el.classList.remove('opacity-60');
+  }
+
+  const geom = computeGeometry(i);
+  const s = solve(i, geom);
+
+  // sidebar readouts
+  $('outRatio').textContent   = geom.ratio.toFixed(3) + ' : 1';
+  $('outPd1').textContent     = fmt(geom.pd1, 'mm');
+  $('outPd2').textContent     = fmt(geom.pd2, 'mm');
+  $('outCenter').textContent  = fmt(geom.center, 'mm');
+  $('outShaftAngle').textContent = (gt === 'miter') ? '90°' : (gt === 'bevel' ? i.shaftAngle + '°' : 'parallel');
+
+  // efficiency label
+  $('effVal').textContent = Math.round(i.eff * 100) + '%';
+  $('pwmVal').textContent = Math.round(i.pwm * 100) + '%';
+  $('animSpeedVal').textContent = (parseFloat($('animSpeed').value)).toFixed(1) + '×';
+
+  // result table
+  $('rRatio').textContent   = geom.ratio.toFixed(3) + ' : 1';
+  $('rMult').textContent    = '×' + (s.mult).toFixed(3) + ' (ratio·η)';
+  $('rMotRpm').textContent  = fmt(s.motRpm, 'rpm', 1);
+  $('rMotTq').textContent   = fmt(s.motT, 'Nm', 3);
+  $('rOutRpm').textContent  = fmt(s.outRpm, 'rpm', 1);
+  $('rOutTq').textContent   = fmt(s.outT, 'Nm', 3);
+  $('rPin').textContent     = fmt(s.Pin, 'W', 2);
+  $('rPout').textContent    = fmt(s.Pout, 'W', 2);
+  $('rLoss').textContent    = fmt(Math.max(s.Pin - s.Pout, 0), 'W', 2) + ' (' + Math.round((1 - i.eff)*100) + '%)';
+
+  const warnEl = $('rWarn');
+  warnEl.className = 'flex justify-between p-2 rounded md:col-span-2 ' + (s.stalled
+    ? 'bg-red-900/40 border border-red-700 text-red-200'
+    : (s.note.startsWith('OVERLOAD') ? 'bg-amber-900/30 border border-amber-700 text-amber-200'
+                                     : 'bg-slate-900/60 border border-slate-800 text-slate-300'));
+  warnEl.innerHTML = '<span>Status</span><span class="mono">' + s.note + '</span>';
+  $('stallOverlay').classList.toggle('hidden', !s.stalled);
+
+  // live rpm text
+  $('rpmLive').textContent = 'motor: ' + fmt(s.motRpm,'rpm',0) + '  ·  output: ' + fmt(s.outRpm,'rpm',0);
+
+  /* ---- Stress analysis ---- */
+  // Torque at each gear: driver = motor torque available, driven = delivered output torque.
+  // Use positive magnitudes (0 if undefined/negative).
+  const T1 = Math.max(s.motT || 0, 0);
+  const T2 = Math.max(s.outT || 0, 0);
+  const a1 = analyseStress(T1, i.z1, i.mod, i.face1, i.bore1, i.mat1);
+  const a2 = analyseStress(T2, i.z2, i.mod, i.face2, i.bore2, i.mat2);
+
+  $('sTooth1').textContent  = fmt(a1.toothSigma, 'MPa', 1);
+  $('sTooth2').textContent  = fmt(a2.toothSigma, 'MPa', 1);
+  $('sfTooth1').textContent = fmt(a1.sfTooth, '×', 2);
+  $('sfTooth2').textContent = fmt(a2.sfTooth, '×', 2);
+  $('sKeyS1').textContent   = fmt(a1.keyShear,   'MPa', 1);
+  $('sKeyS2').textContent   = fmt(a2.keyShear,   'MPa', 1);
+  $('sKeyB1').textContent   = fmt(a1.keyBearing, 'MPa', 1);
+  $('sKeyB2').textContent   = fmt(a2.keyBearing, 'MPa', 1);
+  $('sfKey1').textContent   = fmt(a1.sfKey, '×', 2);
+  $('sfKey2').textContent   = fmt(a2.sfKey, '×', 2);
+  $('keyDim1').textContent  = `${a1.keyW}×${a1.keyH}×${a1.keyLen.toFixed(1)} mm`;
+  $('keyDim2').textContent  = `${a2.keyW}×${a2.keyH}×${a2.keyLen.toFixed(1)} mm`;
+  $('fForce').textContent   = `drv ${a1.Ft_N.toFixed(1)} N · drn ${a2.Ft_N.toFixed(1)} N`;
+
+  const sfMin = Math.min(a1.sfMin, a2.sfMin);
+  const verdictEl = $('stressVerdict');
+  verdictEl.textContent = 'SF min = ' + (isFinite(sfMin) ? sfMin.toFixed(2) + '×' : '–');
+  verdictEl.className = 'mono text-xs px-2 py-1 rounded border ' + (
+    sfMin >= 3   ? 'bg-emerald-900/40 text-emerald-300 border-emerald-800' :
+    sfMin >= 1.5 ? 'bg-amber-900/40  text-amber-300  border-amber-800'    :
+                   'bg-red-900/40    text-red-300    border-red-800'
+  );
+
+  // Apply stress-view color tint to the gear materials (no geometry rebuild needed).
+  // Done after syncScene() so that a rebuild (if one occurred) doesn't wipe the tint.
+  // 3D scene sync
+  state.solver = s;
+  state.geom = geom;
+  state.inputs = i;
+  state.stalled = s.stalled;
+  state.stressAnalysis = { a1, a2 };
+  syncScene();
+}
+
+/* Tab logic */
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    state.mode = btn.dataset.tab;
+    $('tab-motor').classList.toggle('hidden', state.mode !== 'motor');
+    $('tab-output').classList.toggle('hidden', state.mode !== 'output');
+    refresh();
+  });
+});
+
+/* Wire all inputs to refresh — registered in boot() after motor auto-calc handlers */
+
+/* Play / pause */
+$('playBtn').addEventListener('click', () => {
+  state.animating = !state.animating;
+  $('playBtn').textContent = state.animating ? '⏸ Pause' : '▶ Play';
+});
+$('animSpeed').addEventListener('input', () => {
+  state.animSpeed = parseFloat($('animSpeed').value);
+});
+
+/* ---------- 4. Three.js scene ---------- */
+let scene, camera, renderer, controls, gear1, gear2, idlerMesh, shaft1, shaft2, shaftIdler, housing;
+let driverRot = 0;
+
+function initScene() {
+  const el = $('viewport');
+  scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x0b1220);
+  scene.fog = new THREE.Fog(0x0b1220, 200, 600);
+
+  camera = new THREE.PerspectiveCamera(45, el.clientWidth / el.clientHeight, 0.1, 2000);
+  camera.position.set(90, 70, 120);
+
+  renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(el.clientWidth, el.clientHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  el.appendChild(renderer.domElement);
+
+  controls = new OrbitControls(camera, renderer.domElement);
+  controls.enableDamping = true;
+
+  // Lights
+  scene.add(new THREE.HemisphereLight(0xbde0ff, 0x0b1220, 0.6));
+  const dir = new THREE.DirectionalLight(0xffffff, 1.1);
+  dir.position.set(80, 140, 100);
+  dir.castShadow = true;
+  dir.shadow.mapSize.set(1024, 1024);
+  dir.shadow.camera.left = -120; dir.shadow.camera.right = 120;
+  dir.shadow.camera.top = 120;   dir.shadow.camera.bottom = -120;
+  scene.add(dir);
+
+  // Ground
+  const grid = new THREE.GridHelper(600, 60, 0x1f2937, 0x111827);
+  grid.position.y = -40;
+  scene.add(grid);
+
+  // Initial build
+  rebuildGears();
+
+  // Resize observer
+  new ResizeObserver(() => {
+    const w = el.clientWidth, h = el.clientHeight;
+    renderer.setSize(w, h);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }).observe(el);
+
+  animate();
+}
+
+/**
+ * Faithful port of chrisspen/gears (Dr. Jörg Janssen) spur_gear() math.
+ *
+ * Key functions from gears.scad:
+ *   ev(r, rho)  → polar (radius, angleDeg) of involute at rolling-angle rho (deg)
+ *   alpha_spur  → transverse pressure angle corrected for helix
+ *   tooth_width → tooth arc width in degrees at pitch circle
+ *   phi_r       → involute offset angle at pitch circle
+ *
+ * buildInvoluteGearOutline() returns the complete 2-D gear outline as [x,y] pts.
+ * buildGear()               extrudes it into a Three.js Group, with optional
+ *                           helical vertex-twist and herringbone mirroring.
+ */
+
+/* -- gears.scad ev() function (polar involute) ----------------------- */
+function ev(rb, rhoDeg) {
+  // rhoDeg = rolling angle in degrees (matches gears.scad variable names)
+  const rho = rhoDeg * Math.PI / 180;
+  return [
+    rb / Math.cos(rho),                                   // radius
+    (Math.tan(rho) - rho) * (180 / Math.PI)              // angle in degrees
+  ];
+}
+function polarXY(r, angleDeg) {
+  const a = angleDeg * Math.PI / 180;
+  return [r * Math.cos(a), r * Math.sin(a)];
+}
+
+/**
+ * Build the full 2-D gear outline (all teeth + root arcs) as a flat [x,y] array.
+ * Directly mirrors spur_gear() in gears.scad.
+ *
+ * helixDeg is used only for the transverse pressure-angle correction;
+ * the 3-D twist is applied in buildGear() as a vertex post-process.
+ */
+function buildInvoluteGearOutline(teeth, m, paDeg, helixDeg = 0) {
+  const CLEARANCE  = 0.05;   // same as gears.scad
+  const FLANK_STEPS = 16;    // same as gears.scad "step = rho_ra/16"
+  const TIP_STEPS   = 3;
+  const ROOT_STEPS  = 4;
+
+  /* ---- dimensions (gears.scad naming) ------------------------------ */
+  const helixRad   = helixDeg * Math.PI / 180;
+  // Transverse pressure angle for helical gear: atan(tan(PA)/cos(helix))
+  const alpha_t    = Math.atan(Math.tan(paDeg * Math.PI / 180) / Math.cos(helixRad));
+
+  const d  = m * teeth;                                    // pitch diameter
+  const r  = d / 2;                                        // pitch radius
+  const db = d * Math.cos(alpha_t);                        // base diameter
+  const rb = db / 2;                                       // base radius
+
+  const da = (m < 1) ? d + m * 2.2 : d + m * 2;           // tip diameter (DIN 58400 / 867)
+  const ra = da / 2;                                       // tip radius
+  const c  = (teeth < 3) ? 0 : m / 6;                     // tip clearance
+  const df = d - 2 * (m + c);                             // root diameter
+  const rf = Math.max(df / 2, 0.01);                      // root radius (safety floor)
+
+  /* ---- involute angles (gears.scad) -------------------------------- */
+  const rho_ra = Math.acos(Math.min(1, rb / ra)) * 180 / Math.PI; // max rolling angle °
+  const rho_r  = Math.acos(Math.min(1, rb / r))  * 180 / Math.PI; // rolling angle at pitch °
+  const phi_r  = ev(rb, rho_r)[1];                        // involute offset at pitch circle (°)
+
+  const tau         = 360 / teeth;                         // pitch angle °
+  const tooth_width = (180 * (1 - CLEARANCE)) / teeth + 2 * phi_r; // tooth arc width °
+
+  // Matching OpenSCAD: center first tooth on X-axis
+  const init_rot = -phi_r - 90 * (1 - CLEARANCE) / teeth;
+
+  // Where involute starts: if rb < rf (undercut), begin at root circle intersection
+  const rho_start = (rb < rf) ? Math.acos(Math.min(1, rb / rf)) * 180 / Math.PI : 0;
+  const ev_start  = ev(rb, rho_start);
+
+  const pts = [];
+
+  for (let ti = 0; ti < teeth; ti++) {
+    const rot = ti * tau + init_rot;
+
+    /* right flank (ascending involute, rho_start → rho_ra) */
+    for (let s = 0; s <= FLANK_STEPS; s++) {
+      const rho = rho_start + (rho_ra - rho_start) * s / FLANK_STEPS;
+      const [er, ea] = ev(rb, rho);
+      pts.push(polarXY(er, ea + rot));
+    }
+
+    /* tip arc (right tip angle → left tip angle, along ra) */
+    const ea_tip    = ev(rb, rho_ra)[1];
+    const a_tip_r   = ea_tip + rot;
+    const a_tip_l   = tooth_width - ea_tip + rot;
+    for (let s = 1; s <= TIP_STEPS; s++) {
+      pts.push(polarXY(ra, a_tip_r + (a_tip_l - a_tip_r) * s / TIP_STEPS));
+    }
+
+    /* left flank (descending involute, rho_ra → rho_start, angular mirror) */
+    for (let s = FLANK_STEPS; s >= 0; s--) {
+      const rho = rho_start + (rho_ra - rho_start) * s / FLANK_STEPS;
+      const [er, ea] = ev(rb, rho);
+      pts.push(polarXY(er, tooth_width - ea + rot));
+    }
+
+    /* root arc from this tooth's left base → next tooth's right base */
+    const rootLeft  = tooth_width - ev_start[1] + rot;
+    const rootRight = ev_start[1] + rot + tau;
+    const dAng = rootRight - rootLeft;
+    if (dAng > 0.01) {
+      for (let s = 1; s <= ROOT_STEPS; s++) {
+        pts.push(polarXY(rf, rootLeft + dAng * s / ROOT_STEPS));
+      }
+    }
+  }
+
+  return { pts, rf, ra, rb, r };
+}
+
+/**
+ * Apply helical twist to an ExtrudeGeometry's vertices.
+ * twistAtZ0 and twistAtZdepth are angles in radians.
+ */
+function applyTwist(geom, depth, twistAtZ0, twistAtZdepth) {
+  const pos = geom.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const frac = pos.getZ(i) / depth;
+    const angle = twistAtZ0 + (twistAtZdepth - twistAtZ0) * frac;
+    const x = pos.getX(i), y = pos.getY(i);
+    const c = Math.cos(angle), s = Math.sin(angle);
+    pos.setXY(i, x * c - y * s, x * s + y * c);
+  }
+  pos.needsUpdate = true;
+  geom.computeVertexNormals();
+}
+
+/**
+ * Build a per-pixel stress ShaderMaterial. Evaluates the same physical
+ * stress-field function as stressIntensityXY but in the fragment shader,
+ * so the gradient is smooth regardless of mesh tessellation (no ugly
+ * earcut-triangle banding).
+ *
+ * The shader receives the UNTWISTED local XY of each fragment so the field
+ * stays correctly pinned to tooth roots and keyway corners even on helical
+ * gears (we pass the original position as a separate attribute).
+ */
+function makeStressMaterial({ rf, ra, rb, bore, keyway, demand, module }) {
+  const kw = keyway ? keyway.w : 0;
+  const kh = keyway ? keyway.h : 0;
+  return new THREE.ShaderMaterial({
+    uniforms: {
+      rf:     { value: rf },
+      ra:     { value: ra },
+      rBore:  { value: bore / 2 },
+      keyW:   { value: kw },
+      keyH:   { value: kh },
+      mod:    { value: module },
+      demand: { value: demand },
+      lightDir: { value: new THREE.Vector3(0.4, 0.6, 1).normalize() },
+    },
+    vertexShader: /* glsl */`
+      // "aOrigXY" is the pre-twist XY of each vertex (stable stress coordinates).
+      // For non-helical gears it equals position.xy.
+      attribute vec2 aOrigXY;
+      varying vec2 vXY;
+      varying vec3 vNormal;
+      void main() {
+        vXY = aOrigXY;
+        vNormal = normalize(normalMatrix * normal);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */`
+      precision highp float;
+      varying vec2 vXY;
+      varying vec3 vNormal;
+      uniform float rf, ra, rBore, keyW, keyH, mod, demand;
+      uniform vec3 lightDir;
+
+      float stressIntensity(vec2 p) {
+        float r = length(p);
+
+        // --- Tooth bending (Lewis): Gaussian peak at root radius rf ---
+        float tooth = 0.0;
+        if (r >= rBore * 1.2 && r <= ra) {
+          float sigma = max(mod * 0.8, 0.5);
+          float d = r - rf;
+          tooth = exp(-(d * d) / (2.0 * sigma * sigma));
+        }
+
+        // --- Keyway corner stress concentration (Kt ≈ 2.5) ---
+        float key = 0.0;
+        if (keyW > 0.0) {
+          float halfW = keyW * 0.5;
+          float yCirc = sqrt(max(rBore * rBore - halfW * halfW, 0.0));
+          float sig   = 0.6;
+          float Kt    = 2.5;
+          vec2 cr = vec2( halfW, yCirc);
+          vec2 cl = vec2(-halfW, yCirc);
+          float dR = dot(p - cr, p - cr);
+          float dL = dot(p - cl, p - cl);
+          key = max(Kt * exp(-dR / (2.0 * sig * sig)),
+                    Kt * exp(-dL / (2.0 * sig * sig)));
+          // flank bearing zone inside the slot
+          if (abs(p.x) <= halfW && p.y >= yCirc - 0.05 && p.y <= rBore + keyH) {
+            key = max(key, 0.6);
+          }
+          if (abs(r - rBore) < 0.35) key = max(key, 0.25);
+        } else {
+          if (abs(r - rBore) < 0.35) key = 0.25;
+        }
+        return max(tooth, key) * demand;
+      }
+
+      vec3 heat(float v) {
+        float t = clamp(v, 0.0, 1.5) / 1.5;
+        vec3 c0 = vec3(0.15, 0.25, 0.70);
+        vec3 c1 = vec3(0.10, 0.75, 0.90);
+        vec3 c2 = vec3(0.20, 0.85, 0.35);
+        vec3 c3 = vec3(1.00, 0.85, 0.10);
+        vec3 c4 = vec3(0.95, 0.15, 0.15);
+        if (t < 0.25) return mix(c0, c1,  t          / 0.25);
+        if (t < 0.50) return mix(c1, c2, (t - 0.25)  / 0.25);
+        if (t < 0.75) return mix(c2, c3, (t - 0.50)  / 0.25);
+                      return mix(c3, c4, (t - 0.75)  / 0.25);
+      }
+
+      void main() {
+        float v = stressIntensity(vXY);
+        vec3 base = heat(v);
+        // Simple wrap-lighting so the geometry reads as 3D but the colour stays true.
+        float l = max(dot(normalize(vNormal), normalize(lightDir)), 0.0);
+        float shade = mix(0.65, 1.0, l);    // never darker than 65 % — keep colour readable
+        gl_FragColor = vec4(base * shade, 1.0);
+      }
+    `,
+  });
+}
+
+/**
+ * Attach an `aOrigXY` buffer attribute to a geometry. For non-helical geometry
+ * this equals the current XY. For helical/twisted geometry this is populated
+ * with the pre-twist XY so the shader can evaluate the stress field in a
+ * frame that doesn't rotate with the helix.
+ */
+function attachOrigXY(geom, origXYArrayOrNull) {
+  const pos = geom.attributes.position;
+  const arr = new Float32Array(pos.count * 2);
+  if (origXYArrayOrNull) {
+    // provided: copy directly
+    arr.set(origXYArrayOrNull);
+  } else {
+    for (let i = 0; i < pos.count; i++) {
+      arr[i * 2]     = pos.getX(i);
+      arr[i * 2 + 1] = pos.getY(i);
+    }
+  }
+  geom.setAttribute('aOrigXY', new THREE.BufferAttribute(arr, 2));
+}
+
+/**
+ * Stress intensity at a 2-D point (x,y) in gear-local coords.
+ * Returns a value in roughly [0, 1+] where:
+ *   - 0 = low stress
+ *   - 1 = at nominal SF=1 (yielding)
+ *   - >1 = locally over yield due to stress concentration
+ *
+ * Physical basis:
+ *   • Lewis tooth bending: stress peaks at tooth root fillet, drops toward tip.
+ *     We model it as a Gaussian falloff centred on the root radius (width ~ 1·module).
+ *   • Keyway corners: Kt ~ 2–3 for a sharp DIN keyway (Peterson Fig 5.6).
+ *     We apply a radial falloff from each inner-corner point.
+ *   • Bore wall: low baseline (1× demand) away from keyway.
+ *   • Far from teeth & bore (gear body): near-zero.
+ *
+ * @param sf  {rf, ra, rb, bore, keyway, demand}   demand = 1 / safety_factor
+ */
+function stressIntensityXY(x, y, sf) {
+  const r = Math.hypot(x, y);
+  const { rf, ra, rb, bore, keyway, demand, m } = sf;
+  const rBore = bore / 2;
+
+  // --- 1. Tooth bending field ---
+  // Peaks at r = rf (root), decays over ~1 module toward tip and back into body.
+  // Outside the dedendum circle it's essentially 0 at the tip.
+  let tooth = 0;
+  if (r >= rBore * 1.2 && r <= ra) {
+    // distance above root (positive into tooth) and below root (into body)
+    const sigma = Math.max(m * 0.8, 0.5);    // falloff ~ 0.8·module
+    const d     = r - rf;
+    tooth = Math.exp(-(d * d) / (2 * sigma * sigma));
+    // Root-gap regions also see compressive stress — same magnitude
+  }
+
+  // --- 2. Keyway corner stress concentration ---
+  let key = 0;
+  if (keyway && keyway.w > 0) {
+    const halfW  = keyway.w / 2;
+    const yCirc  = Math.sqrt(Math.max(rBore * rBore - halfW * halfW, 0));
+    // The two inner corners (where keyway meets bore) — highest Kt
+    const cornerR = [ halfW, yCirc];
+    const cornerL = [-halfW, yCirc];
+    const sigma = 0.6;                       // ~0.6 mm concentration zone
+    const Kt    = 2.5;                       // typical DIN 6885 keyway corner
+    for (const [cx, cy] of [cornerR, cornerL]) {
+      const dx = x - cx, dy = y - cy;
+      const d2 = dx * dx + dy * dy;
+      key = Math.max(key, Kt * Math.exp(-d2 / (2 * sigma * sigma)));
+    }
+    // Baseline bearing/shear on keyway flanks (weaker than corners)
+    // Inside the keyway slot vertically
+    if (Math.abs(x) <= halfW && y >= yCirc - 0.05 && y <= rBore + keyway.h) {
+      key = Math.max(key, 0.6);
+    }
+    // On the bore circle itself, add a small baseline (shaft torsion on wall)
+    const onBore = Math.abs(r - rBore) < 0.35;
+    if (onBore) key = Math.max(key, 0.25);
+  } else {
+    // No keyway → small baseline on bore wall
+    if (Math.abs(r - rBore) < 0.35) key = 0.25;
+  }
+
+  // Combine (take max — whichever mechanism dominates)
+  const raw = Math.max(tooth, key);
+  return raw * demand;
+}
+
+/**
+ * Map a stress intensity in [0, ~2] to a heat-map RGB color.
+ *   0.0 → deep blue
+ *   0.5 → cyan / green
+ *   1.0 → yellow (at yield)
+ *   >1.0 → red (over yield)
+ */
+function heatColor(v) {
+  const t = Math.min(Math.max(v, 0), 1.5) / 1.5;  // normalise 0..1.5 → 0..1
+  // 5-stop gradient: blue → cyan → green → yellow → red
+  const stops = [
+    [0.00, 0.15, 0.25, 0.70],
+    [0.25, 0.10, 0.75, 0.90],
+    [0.50, 0.20, 0.85, 0.35],
+    [0.75, 1.00, 0.85, 0.10],
+    [1.00, 0.95, 0.15, 0.15],
+  ];
+  for (let i = 0; i < stops.length - 1; i++) {
+    const [a, ar, ag, ab] = stops[i];
+    const [b, br, bg, bb] = stops[i + 1];
+    if (t <= b) {
+      const k = (t - a) / (b - a);
+      return [ar + (br - ar) * k, ag + (bg - ag) * k, ab + (bb - ab) * k];
+    }
+  }
+  return [stops[stops.length - 1][1], stops[stops.length - 1][2], stops[stops.length - 1][3]];
+}
+
+/** Attach a per-vertex color attribute to a geometry based on a stress field. */
+function paintStressColors(geom, sf) {
+  const pos = geom.attributes.position;
+  const colors = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    // NOTE: helical geometries have already been twisted. That's OK — the stress
+    // field is radial/angular-invariant for this visualisation (we're showing
+    // tooth-root and keyway concentrations, which exist at every z-slice).
+    const x = pos.getX(i), y = pos.getY(i);
+    const v = stressIntensityXY(x, y, sf);
+    const [r, g, b] = heatColor(v);
+    colors[i * 3]     = r;
+    colors[i * 3 + 1] = g;
+    colors[i * 3 + 2] = b;
+  }
+  geom.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+}
+
+/**
+ * Build a 3-D gear mesh using a proper involute 2-D profile (see above).
+ * Supports spur, helical (vertex twist), herringbone (two mirrored halves),
+ * and bevel (tapered extrusion approximation).
+ *
+ * The group's local axis is Z — animate by rotating group.rotation.z.
+ *
+ * To extend to multi-stage gearboxes: call this per stage and position groups
+ * along the Z-axis or at offset XY centres.
+ */
+function buildGear({ teeth, module: m, face, bore, color, helix = 0,
+                     herringbone = false, pressureAngle = 20, bevelHalfAngle = 0,
+                     keyway = null, stressField = null }) {
+  const group = new THREE.Group();
+
+  // In stress-view mode, use white base so vertex colors show cleanly; otherwise solid color.
+  const useVC = !!stressField;
+  const mat = new THREE.MeshStandardMaterial({
+    color: useVC ? 0xffffff : color,
+    metalness: useVC ? 0.15 : 0.55,
+    roughness: useVC ? 0.55 : 0.38,
+    flatShading: false,
+    vertexColors: useVC,
+  });
+  const matBore = new THREE.MeshStandardMaterial({
+    color: 0x060d1a, metalness: 0.15, roughness: 0.95,
+  });
+
+  /* ---- Bevel approximation --------------------------------------- */
+  if (bevelHalfAngle > 0) {
+    const { pts, ra, rf, rb } = buildInvoluteGearOutline(teeth, m, pressureAngle, 0);
+    const shape = new THREE.Shape();
+    shape.moveTo(pts[0][0], pts[0][1]);
+    for (let k = 1; k < pts.length; k++) shape.lineTo(pts[k][0], pts[k][1]);
+    shape.closePath();
+
+    // Extrude then scale XY to taper (approximates the bevel cone)
+    const bevelSteps = 8;
+    const geom = new THREE.ExtrudeGeometry(shape, {
+      depth: face, bevelEnabled: false, steps: bevelSteps, curveSegments: 1,
+    });
+    const rg = ra / Math.sin(bevelHalfAngle); // large-cone radius (approx)
+    const pos = geom.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const z   = pos.getZ(i);
+      const s   = 1.0 - (z / rg);  // linear taper toward cone apex
+      pos.setXY(i, pos.getX(i) * s, pos.getY(i) * s);
+    }
+    pos.needsUpdate = true;
+    geom.computeVertexNormals();
+    geom.translate(0, 0, -face / 2);
+
+    if (stressField) {
+      const sfBevel = { ...stressField, rf, ra, rb, bore, keyway, module: m };
+      attachOrigXY(geom, null);   // bevel has no twist — current XY == original XY
+      const bevelMat = makeStressMaterial(sfBevel);
+      group.add(Object.assign(new THREE.Mesh(geom, bevelMat), { castShadow: true, receiveShadow: true }));
+    } else {
+      group.add(Object.assign(new THREE.Mesh(geom, mat), { castShadow: true, receiveShadow: true }));
+    }
+    const boreG = new THREE.CylinderGeometry(bore / 2, bore / 2, face * 1.05, 24);
+    boreG.rotateX(Math.PI / 2);
+    group.add(new THREE.Mesh(boreG, matBore));
+    group.userData = { teeth, module: m, face, pitchDiameter: m * teeth };
+    return group;
+  }
+
+  /* ---- Spur / helical / herringbone ------------------------------ */
+  const { pts, r, rf, ra, rb } = buildInvoluteGearOutline(teeth, m, pressureAngle, helix);
+
+  // If stress-view, fill in the geometry context for the field function
+  const sf = stressField ? { ...stressField, rf, ra, rb, bore, keyway, module: m } : null;
+
+  const shape = new THREE.Shape();
+  shape.moveTo(pts[0][0], pts[0][1]);
+  for (let k = 1; k < pts.length; k++) shape.lineTo(pts[k][0], pts[k][1]);
+  shape.closePath();
+
+  // Bore hole (with optional keyway slot along +Y)
+  const borePath = new THREE.Path();
+  if (keyway && keyway.w > 0 && keyway.h > 0 && keyway.w < bore * 0.9) {
+    const halfW   = keyway.w / 2;
+    const rBore   = bore / 2;
+    const yCirc   = Math.sqrt(Math.max(rBore * rBore - halfW * halfW, 0));
+    const keyTop  = rBore + keyway.h / 2;
+    const thR     = Math.atan2(yCirc,  halfW);   // right-edge angle on circle
+    const thL     = Math.atan2(yCirc, -halfW);   // left-edge angle (≈ π − thR)
+    borePath.moveTo(halfW, yCirc);
+    // Long arc from right keyway edge, clockwise around the bottom, up to left keyway edge
+    borePath.absarc(0, 0, rBore, thR, thL, true);
+    borePath.lineTo(-halfW, keyTop);
+    borePath.lineTo( halfW, keyTop);
+    borePath.lineTo( halfW, yCirc);
+  } else {
+    borePath.absellipse(0, 0, bore / 2, bore / 2, 0, Math.PI * 2, false);
+  }
+  shape.holes.push(borePath);
+
+  const helixRad   = helix * Math.PI / 180;
+  // Total twist angle (rad) across full face — matches gears.scad gamma
+  // gamma = (180/π) * face / (r * tan(90-helix))  [deg]  = face * tan(helix) / r [rad]
+  const totalTwist = face * Math.tan(helixRad) / r;
+  const isHelical  = Math.abs(totalTwist) > 1e-4;
+  const extSteps   = isHelical ? 20 : 1;
+
+  function extrudeSlab(depth, twistStart, twistEnd) {
+    const geom = new THREE.ExtrudeGeometry(shape, {
+      depth, bevelEnabled: false, steps: extSteps, curveSegments: 1,
+    });
+    // Capture the pre-twist XY for shader stress field BEFORE applying twist
+    if (sf) attachOrigXY(geom, null);
+    if (isHelical) applyTwist(geom, depth, twistStart, twistEnd);
+    return geom;
+  }
+
+  // Pick the material: shader-based heatmap in stress view, PBR otherwise.
+  const gearMat = sf ? makeStressMaterial(sf) : mat;
+
+  if (herringbone && isHelical) {
+    // Bottom half: runs from world z = -face/2 → 0
+    // (extruded 0→face/2, translated by -face/2)
+    // twist goes from +halfTwist (at far end z=-face/2) → 0 (at centre z=0)
+    const halfTwist  = totalTwist / 2;
+    const g1 = extrudeSlab(face / 2, halfTwist, 0);
+    g1.translate(0, 0, -face / 2);
+    group.add(Object.assign(new THREE.Mesh(g1, gearMat), { castShadow: true, receiveShadow: true }));
+
+    // Top half: world z = 0 → face/2
+    // twist goes 0 (centre) → -halfTwist (far end), mirroring bottom half
+    const g2 = extrudeSlab(face / 2, 0, -halfTwist);
+    // g2 already sits 0 → face/2 — no translate needed
+    group.add(Object.assign(new THREE.Mesh(g2, gearMat), { castShadow: true, receiveShadow: true }));
+  } else {
+    const g = extrudeSlab(face, 0, totalTwist);
+    g.translate(0, 0, -face / 2);
+    group.add(Object.assign(new THREE.Mesh(g, gearMat), { castShadow: true, receiveShadow: true }));
+  }
+
+  group.userData = { teeth, module: m, face, pitchDiameter: m * teeth };
+  return group;
+}
+
+function clearChildren(...objs) {
+  objs.forEach(o => { if (o) scene.remove(o); });
+}
+
+function rebuildGears() {
+  clearChildren(gear1, gear2, idlerMesh, shaft1, shaft2, shaftIdler, housing);
+
+  const i = state.inputs || readInputs();
+  const geom = state.geom || computeGeometry(i);
+  const isBevel = (i.gearType === 'bevel' || i.gearType === 'miter');
+  const shaftAngle = (i.gearType === 'miter') ? 90 : i.shaftAngle;
+
+  const helix = (i.gearType === 'helical' || i.gearType === 'herringbone') ? i.helix : 0;
+  const herringbone = (i.gearType === 'herringbone');
+
+  // Material colors (overridden if stressView is on — handled in refresh())
+  const col1 = MATERIALS[i.mat1].color;
+  const col2 = MATERIALS[i.mat2].color;
+  const key1 = i.showKey ? keyDims(i.bore1) : null;
+  const key2 = i.showKey ? keyDims(i.bore2) : null;
+
+  // If stressView is on, compute per-gear stress demand = 1 / SF_min and pass
+  // it as a stressField hint. The buildGear function will paint per-vertex
+  // colors showing the bending/keyway stress distribution.
+  let sf1 = null, sf2 = null;
+  if (i.stressView && state.stressAnalysis) {
+    const { a1, a2 } = state.stressAnalysis;
+    sf1 = { demand: 1 / Math.max(a1.sfMin, 0.05) };
+    sf2 = { demand: 1 / Math.max(a2.sfMin, 0.05) };
+  }
+
+  gear1 = buildGear({
+    teeth: i.z1, module: i.mod, face: i.face1, bore: i.bore1,
+    color: col1, helix, herringbone, pressureAngle: i.pressure,
+    bevelHalfAngle: isBevel ? (shaftAngle * Math.PI / 180) / 2 : 0,
+    keyway: key1, stressField: sf1,
+  });
+  gear2 = buildGear({
+    teeth: i.z2, module: i.mod, face: i.face2, bore: i.bore2,
+    color: col2, helix: -helix, herringbone, pressureAngle: i.pressure,
+    bevelHalfAngle: isBevel ? (shaftAngle * Math.PI / 180) / 2 : 0,
+    keyway: key2, stressField: sf2,
+  });
+
+  // Position gears
+  if (!isBevel) {
+    // Parallel shafts: along Z. Gear1 at origin, Gear2 offset by center distance along X.
+    gear1.position.set(0, 0, 0);
+    gear2.position.set(geom.center, 0, 0);
+
+    if (i.idler) {
+      const zIdler = Math.max(12, Math.round((i.z1 + i.z2) / 4));
+      idlerMesh = buildGear({
+        teeth: zIdler, module: i.mod, face: Math.min(i.face1, i.face2), bore: i.bore1,
+        color: 0xfbbf24, helix: 0, herringbone: false, pressureAngle: i.pressure, bevelHalfAngle: 0,
+      });
+      // Place on a pleasant triangle between driver and driven
+      const pdIdler = i.mod * zIdler;
+      const cx = geom.center / 2;
+      const cy = (geom.pd1 + pdIdler) / 2 + 6;
+      idlerMesh.position.set(cx, cy, 0);
+      scene.add(idlerMesh);
+
+      shaftIdler = new THREE.Mesh(
+        new THREE.CylinderGeometry(i.bore1 / 2 * 0.95, i.bore1 / 2 * 0.95, i.face1 * 3, 20),
+        new THREE.MeshStandardMaterial({ color: 0x9ca3af, metalness: 0.9, roughness: 0.2 })
+      );
+      shaftIdler.rotation.x = Math.PI / 2;
+      shaftIdler.position.copy(idlerMesh.position);
+      scene.add(shaftIdler);
+    }
+  } else {
+    // Bevel: gear1 along Z, gear2 along Y (rotated) meeting at origin.
+    gear1.position.set(0, 0, 0);
+    gear2.rotation.x = shaftAngle * Math.PI / 180;
+    gear2.position.set(0, geom.pd2 / 2 + geom.pd1 / 2, 0);
+  }
+
+  // Shafts
+  const shaftMat = new THREE.MeshStandardMaterial({ color: 0x9ca3af, metalness: 0.9, roughness: 0.2 });
+  shaft1 = new THREE.Mesh(new THREE.CylinderGeometry(i.bore1 / 2 * 0.95, i.bore1 / 2 * 0.95, i.face1 * 3, 20), shaftMat);
+  shaft2 = new THREE.Mesh(new THREE.CylinderGeometry(i.bore2 / 2 * 0.95, i.bore2 / 2 * 0.95, i.face2 * 3, 20), shaftMat);
+  shaft1.rotation.x = Math.PI / 2; shaft1.position.copy(gear1.position);
+  shaft2.rotation.x = isBevel ? (Math.PI / 2 + gear2.rotation.x) : Math.PI / 2; shaft2.position.copy(gear2.position);
+  if (isBevel) { shaft2.rotation.x = 0; shaft2.rotation.z = 0; shaft2.rotation.y = 0;
+    // for bevel, shaft2 axis aligns with gear2 rotated axis
+    const axis = new THREE.Vector3(0, 1, 0).applyEuler(gear2.rotation);
+    shaft2.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), axis);
+  }
+  scene.add(shaft1, shaft2);
+
+  // Housing: simple semi-transparent shell
+  const hx = Math.max(geom.pd1, geom.pd2) + 30;
+  const hy = geom.center + geom.pd2 + 20;
+  const hz = Math.max(i.face1, i.face2) + 20;
+  housing = new THREE.Mesh(
+    new THREE.BoxGeometry(hx * 1.4, hy * 0.8, hz),
+    new THREE.MeshStandardMaterial({ color: 0x1e293b, transparent: true, opacity: 0.15, roughness: 0.8 })
+  );
+  housing.position.set(geom.center / 2, 0, 0);
+  if (isBevel) housing.position.set(0, geom.pd2 / 2, 0);
+  scene.add(housing);
+
+  scene.add(gear1, gear2);
+
+  // Frame camera
+  const size = Math.max(geom.pd1 + geom.pd2, 60);
+  camera.position.set(size * 1.2, size * 0.8, size * 1.4);
+  controls.target.set(isBevel ? 0 : geom.center / 2, isBevel ? geom.pd2 / 2 : 0, 0);
+  controls.update();
+}
+
+function syncScene() {
+  if (!scene) return; // scene not yet initialized (first refresh during boot)
+  // Rebuild if key geometry changed. Cheap diff via stringified key.
+  const i = state.inputs;
+  const key = [i.gearType, i.z1, i.z2, i.mod, i.face1, i.face2, i.bore1, i.bore2,
+               i.shaftAngle, i.helix, i.pressure, i.idler,
+               i.mat1, i.mat2, i.showKey, i.stressView,
+               // In stress view, repaint whenever the SF demand changes materially
+               i.stressView && state.stressAnalysis
+                 ? Math.round((1/state.stressAnalysis.a1.sfMin)*100) + '/' +
+                   Math.round((1/state.stressAnalysis.a2.sfMin)*100)
+                 : ''
+              ].join('|');
+  if (key !== state._sceneKey) {
+    state._sceneKey = key;
+    rebuildGears();
+  }
+}
+
+function animate(timestamp) {
+  requestAnimationFrame(animate);
+  controls.update();
+
+  if (state.animating && state.solver && !state.stalled) {
+    // Compute actual elapsed time (ms → s), clamp to avoid jumps on tab-switch
+    const dt = Math.min((timestamp - (state._lastTs || timestamp)) / 1000, 0.05);
+    state._lastTs = timestamp;
+
+    // Visual RPM: clamp to a human-perceptible range (20–180 rpm visual), then
+    // scale with the speed multiplier. The ratio between driver/driven is preserved.
+    const actualRpm  = Math.max(state.solver.motRpm, 0.1);
+    const visualRpm  = Math.max(Math.min(actualRpm, 180), 20) * state.animSpeed;
+    const omega      = rpmToOmega(visualRpm) * dt;  // rad this frame
+
+    driverRot += omega;
+    if (gear1) gear1.rotation.z = driverRot;
+    if (gear2) {
+      const ratio = state.geom.ratio;
+      // Counter-rotation for external mesh; idler flips driven direction.
+      const dir = state.inputs.idler ? 1 : -1;
+      // Phase offset: π/z2 aligns a tooth gap toward gear1 at t=0
+      gear2.rotation.z = driverRot * dir / ratio + Math.PI / state.inputs.z2;
+    }
+    if (idlerMesh) {
+      idlerMesh.rotation.z = -driverRot * (state.inputs.z1 / idlerMesh.userData.teeth);
+    }
+  } else {
+    state._lastTs = timestamp; // keep timestamp fresh while paused/stalled
+  }
+
+  renderer.render(scene, camera);
+}
+
+/* ---------- motor auto-calc ---------- */
+// Track whether user has manually overridden the auto-calculated fields.
+// Once a user types directly in the torque fields, we stop overwriting them
+// — but re-trigger auto-fill whenever RPM or Power changes.
+let torqueUserEdited = false;
+let stallUserEdited  = false;
+
+function autoCalcTorque() {
+  const rpm   = parseFloat($('mRpm').value)   || 0;
+  const power = parseFloat($('mPower').value) || 0;
+  if (!torqueUserEdited && rpm > 0 && power > 0) {
+    const omega = rpm * 2 * Math.PI / 60;
+    const t = (power / omega).toFixed(3);
+    $('mTorque').value = t;
+    autoCalcStall();   // cascade
+  }
+  // show/hide chip
+  $('torqueAutoChip').style.display = torqueUserEdited ? 'none' : '';
+}
+
+function autoCalcStall() {
+  const torque = parseFloat($('mTorque').value) || 0;
+  if (!stallUserEdited && torque > 0) {
+    $('mMaxTorque').value = (2 * torque).toFixed(3);
+  }
+  $('stallAutoChip').style.display = stallUserEdited ? 'none' : '';
+}
+
+function wireMotorAutoCalc() {
+  // Power or RPM change → recalculate rated torque (and cascade to stall)
+  // (refresh() is called by the blanket input listener; these just handle the auto-fill logic)
+  $('mRpm').addEventListener('input',   () => { torqueUserEdited = false; stallUserEdited = false; autoCalcTorque(); });
+  $('mPower').addEventListener('input', () => { torqueUserEdited = false; stallUserEdited = false; autoCalcTorque(); });
+
+  // User directly edits rated torque → mark as user-overridden, cascade to stall
+  $('mTorque').addEventListener('input', () => {
+    torqueUserEdited = true;
+    $('torqueAutoChip').style.display = 'none';
+    autoCalcStall();
+  });
+
+  // User directly edits stall torque → freeze it
+  $('mMaxTorque').addEventListener('input', () => {
+    stallUserEdited = true;
+    $('stallAutoChip').style.display = 'none';
+  });
+}
+
+/* ---------- boot ---------- */
+function boot() {
+  initScene();   // build scene FIRST so refresh()/syncScene() can add meshes
+  wireMotorAutoCalc();
+  // Wire all inputs to refresh AFTER motor auto-calc listeners so auto-calc runs first
+  ['change','input'].forEach(ev => {
+    document.querySelectorAll('input, select').forEach(el => el.addEventListener(ev, refresh));
+  });
+  autoCalcTorque();  // set consistent initial values
+  refresh();
+}
+if (document.readyState === 'loading') {
+  window.addEventListener('DOMContentLoaded', boot);
+} else {
+  boot();
+}
+</script>
+</body>
+</html>
