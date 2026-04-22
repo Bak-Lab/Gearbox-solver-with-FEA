@@ -427,25 +427,72 @@
           <span class="mono text-[10px] text-slate-500">CST · bore-fixed · flank-loaded · Jacobi-PCG</span>
         </h2>
         <div class="flex items-center gap-3 text-xs mono">
-          <label class="text-slate-400">Mesh
-            <select id="feaRes" class="ml-1 bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-xs">
-              <option value="10,20">Coarse</option>
-              <option value="16,32" selected>Medium</option>
-              <option value="22,44">Fine</option>
-              <option value="30,60">Ultra</option>
+          <label class="text-slate-400 flex items-center gap-1">
+            Field
+            <span class="tip text-slate-500">ⓘ<span class="tip-body">
+              Scalar quantity painted on each element of the mesh.
+              Hover over any option in the dropdown for its specific meaning.
+              Colour scale is shared between both gears so they are directly
+              comparable; max of scale is shown in the legend.
+            </span></span>
+            <select id="feaField" class="ml-1 bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-xs">
+              <option value="vm" selected title="Von Mises stress σvM = √(σxx² − σxx·σyy + σyy² + 3τxy²). The standard ductile-failure criterion: yielding occurs when σvM ≥ σ_yield. This is the single most useful field for checking if a gear will plastically deform. Units: MPa.">von Mises stress</option>
+              <option value="disp" title="Total displacement magnitude |u| = √(ux² + uy²). Shows how much each point of the gear physically moves under load. Driven by tooth bending + rim shear. Typical values are microns for metal, tens of microns for plastic. Units: mm (legend shows µm).">Displacement |u|</option>
+              <option value="sxx" title="Direct stress along the X axis. Positive = tension pulling in +X, negative = compression. Useful for spotting axial tension/compression bands across the rim. Units: MPa.">σxx (normal stress X)</option>
+              <option value="syy" title="Direct stress along the Y axis. Positive = tension in +Y, negative = compression. Combined with σxx and τxy it fully defines the 2-D stress state at each element. Units: MPa.">σyy (normal stress Y)</option>
+              <option value="sxy" title="Shear stress on faces parallel to the X/Y axes. Dominates near tooth flanks and the keyway corners. A pure |τxy| plot highlights shear-driven failure paths. Units: MPa.">τxy (shear)</option>
+              <option value="s1" title="Maximum principal stress σ₁ = ½(σxx+σyy) + √(¼(σxx−σyy)² + τxy²). Largest tensile stress at that point, independent of coordinate system. Crack initiation tends to follow σ₁ contours in brittle materials. Units: MPa.">Principal σ₁ (max)</option>
+              <option value="s2" title="Minimum principal stress σ₂ = ½(σxx+σyy) − √(…). Largest compressive stress when negative. Used with σ₁ to visualise the full Mohr's-circle state. Units: MPa.">Principal σ₂ (min)</option>
+              <option value="shear" title="Maximum in-plane shear τmax = √(¼(σxx−σyy)² + τxy²) = (σ₁−σ₂)/2. Tresca failure criterion. Useful for ductile shafts and keys. Units: MPa.">Max shear τmax</option>
+              <option value="strain" title="Strain-energy density U = (σxx² + σyy² − 2ν·σxx·σyy + 2(1+ν)·τxy²)/(2E). Energy stored per unit volume — integrates to total strain energy in the gear. Hot spots are where the material is working hardest. Units: mJ/mm³.">Strain energy density</option>
+              <option value="safety" title="Utilisation ratio σvM / σ_yield of the CURRENT material. Cold = safe, yellow ≈ 80 % of yield, red = at yield, orange beyond = local yielding predicted. Scale is fixed 0–1.2 so colours are directly readable. Dimensionless.">Safety factor σ/σy</option>
             </select>
           </label>
-          <span id="feaStats" class="text-slate-500">—</span>
+          <label class="text-slate-400 flex items-center gap-1">
+            Mesh
+            <span class="tip text-slate-500">ⓘ<span class="tip-body">
+              Triangular element density of the CST mesh. Finer = more
+              accurate stress at concentrators (tooth fillet, keyway
+              corners) but slower to solve. Coarse ≈ 500 elements,
+              Ultra ≈ 4 000. The solver uses Delaunator for meshing and a
+              Jacobi-preconditioned conjugate-gradient method for the
+              linear system.
+            </span></span>
+            <select id="feaRes" class="ml-1 bg-slate-950 border border-slate-700 rounded px-1.5 py-0.5 text-xs">
+              <option value="10,20"  title="~500 elements. Quick preview; stress at fillets & keyway underestimated by ~15 %.">Coarse</option>
+              <option value="16,32" selected title="~1 500 elements. Good balance — default.">Medium</option>
+              <option value="22,44" title="~3 000 elements. Fillet stress converges to within a few %. ~2× slower than Medium.">Fine</option>
+              <option value="30,60" title="~5 000 elements. Converged reference quality. Noticeably slow on very high tooth counts.">Ultra</option>
+            </select>
+          </label>
+          <label class="text-slate-400 flex items-center gap-1"
+                 title="Show the gear in its deformed shape, with nodal displacements scaled ×N so the bending is visible to the eye. The scale factor is chosen so peak displacement ≈ 12 % of the module. This is a visual exaggeration, not the real deflection.">
+            <input type="checkbox" id="feaDeformed" class="accent-fuchsia-400">
+            Deformed
+            <span class="tip text-slate-500">ⓘ<span class="tip-body">
+              Overlays the displaced mesh (peak ≈ 12 % of module for
+              visibility). The undistorted gear would show almost no
+              movement at true scale because stiffness ≫ load.
+            </span></span>
+          </label>
+          <span id="feaStats" class="text-slate-500"
+                title="Mesh size of each gear: nodes / elements. Higher mesh density → more elements → slower solve but finer stress resolution.">—</span>
         </div>
       </div>
       <div class="relative bg-slate-950" style="height: 560px;">
-        <canvas id="feaCanvas" class="w-full h-full block"></canvas>
-        <div id="feaLegend" class="absolute bottom-2 right-2 text-[10px] mono text-slate-300 bg-slate-900/70 border border-slate-800 rounded px-2 py-1 space-y-0.5"></div>
-        <div id="feaContactChip" class="absolute top-2 left-2 text-[10px] mono text-slate-300 bg-slate-900/70 border border-slate-800 rounded px-2 py-1"></div>
+        <canvas id="feaCanvas" class="w-full h-full block"
+                title="Hover over the gears to inspect the stress field. Driver gear sits at the left origin, driven gear to its right. The currently-engaged tooth is rotated into the loaded position each frame using the pre-solved single-tooth stress signature."></canvas>
+        <div id="feaLegend" class="absolute bottom-2 right-2 text-[10px] mono text-slate-300 bg-slate-900/70 border border-slate-800 rounded px-2 py-1 space-y-0.5"
+             title="Colour scale for the selected field. Left edge = 0, right edge = peak value across both gears for tensor-valued fields, or the per-field max for displacement / strain energy. The safety-factor scale is fixed at 0–1.2 so colours are absolute."></div>
+        <div id="feaContactChip" class="absolute top-2 left-2 text-[10px] mono text-slate-300 bg-slate-900/70 border border-slate-800 rounded px-2 py-1"
+             title="Live readout of the Matter.js contact manifold: number of contact points, total penetration depth (proxy for contact force), and the engagement factor driving the per-tooth load magnitudes."></div>
+        <div id="feaFieldHint"
+             class="absolute top-2 right-2 max-w-sm text-[10px] mono text-slate-300 bg-slate-900/70 border border-slate-800 rounded px-2 py-1 leading-relaxed pointer-events-none"></div>
       </div>
       <div class="px-4 py-2 border-t border-slate-800 text-xs text-slate-400 flex justify-between">
-        <span>Pre-solved FEA per gear · stress field rotated into each currently-engaged tooth · fade = proximity to line of action</span>
-        <span id="feaSolveInfo" class="mono">—</span>
+        <span title="How the solver works: each gear is pre-solved ONCE with a unit torque (CST plane-stress FEA, Jacobi-PCG). The resulting single-tooth stress field is then rotated into every currently-engaged tooth and weighted by that tooth's real contact-force fraction (from Matter.js). A second solve captures the static keyway stress concentration — this part does not rotate.">Pre-solved FEA per gear · stress field rotated into each currently-engaged tooth · fade = proximity to line of action</span>
+        <span id="feaSolveInfo" class="mono"
+              title="Solve wall-clock time and peak von Mises stress per gear at unit (100 %) load. Also shows the tangential tooth force Ft = T·1000/rPitch in Newtons.">—</span>
       </div>
     </div>
 
@@ -707,10 +754,10 @@ function computeGeometry(i) {
 /* ---------- Materials & stress ---------- */
 // σy = yield (MPa), E = Young's (GPa), ρ = density (g/cm³), color for Three.js
 const MATERIALS = {
-  pla:   { name: 'PLA',           yield: 50,  E: 3.5, rho: 1.24, color: 0x6ee7b7 },
-  abs:   { name: 'ABS',           yield: 40,  E: 2.3, rho: 1.05, color: 0xfbbf24 },
-  al:    { name: 'Aluminum 6061', yield: 276, E: 69,  rho: 2.70, color: 0xcbd5e1 },
-  steel: { name: 'Steel 1045',    yield: 530, E: 200, rho: 7.85, color: 0x64748b },
+  pla:   { name: 'PLA',           yield: 50,  E: 3.5, nu: 0.36, rho: 1.24, color: 0x6ee7b7 },
+  abs:   { name: 'ABS',           yield: 40,  E: 2.3, nu: 0.39, rho: 1.05, color: 0xfbbf24 },
+  al:    { name: 'Aluminum 6061', yield: 276, E: 69,  nu: 0.33, rho: 2.70, color: 0xcbd5e1 },
+  steel: { name: 'Steel 1045',    yield: 530, E: 200, nu: 0.30, rho: 7.85, color: 0x64748b },
 };
 
 /* ---------- Heatmap colormap presets ---------- */
@@ -880,7 +927,7 @@ const FEA = (() => {
   //   interior = jittered grid, culled to the annular body
   // Returns { nodes, tris, nRad, nTan, nNodes, nEl, boreNodes,
   //           outlineNodes, ra, rf, rb, r }.
-  function buildMesh({ Z, m, pa, bore, nRad, nTan }) {
+  function buildMesh({ Z, m, pa, bore, nRad, nTan, keyway = null }) {
     if (typeof Delaunator === 'undefined') {
       throw new Error('Delaunator not loaded');
     }
@@ -888,6 +935,20 @@ const FEA = (() => {
     const { pts: rawOutline, ra, rf, rb, r } =
       buildInvoluteGearOutline(Z, m, pa, 0, true);
     const rBore = Math.max(bore / 2, 0.05 * r);
+
+    // Keyway cut-out geometry (DIN 6885). We model it as a rectangular slot
+    // centred on +Y, carved into the bore. Corners are kept sharp (stress
+    // concentrators) — the real mesh resolution defines the singularity cap.
+    const kw = keyway ? keyway.w : 0;
+    const kh = keyway ? keyway.h : 0;
+    const hasKey = keyway && kw > 0 && kh > 0;
+    const keyRect = hasKey ? {
+      xMin: -kw/2, xMax: kw/2,
+      yMin: rBore, yMax: rBore + kh,
+    } : null;
+    const inKeyway = (x, y) => keyRect &&
+      x > keyRect.xMin && x < keyRect.xMax &&
+      y > keyRect.yMin && y < keyRect.yMax;
 
     // Target mesh density derives from UI controls. Aim for roughly
     // nRad*nTan*1.5 elements regardless of gear size by choosing element
@@ -938,14 +999,50 @@ const FEA = (() => {
 
     const nodes = [];                                 // [x,y,...]
     const boreNodes   = [];
+    const boreCircleNodes = [];                       // shaft bore (roller BC)
+    const keywayWallNodes = [];                       // key flanks (fixed BC)
     const outlineNodes = [];
 
     // 1) Bore circle — fixed, first in list so their DOFs are easy to pin.
+    //    When a keyway is present we skip the arc segment occupied by the
+    //    slot; those openings become the keyway's bottom edge.
     const nBore = Math.max(Math.ceil(2 * Math.PI * rBore / edge), 24);
+    // Angular window where the keyway cuts into the bore circle
+    // (keyway bottom edge is at y = rBore, straddling x ∈ [-kw/2, kw/2]).
+    const keyHalfAng = hasKey ? Math.asin(Math.min((kw/2) / rBore, 0.95)) : 0;
     for (let k = 0; k < nBore; k++) {
       const t = 2 * Math.PI * k / nBore;
-      boreNodes.push(nodes.length / 2);
+      if (hasKey) {
+        // Bore-circle parametrisation: angle measured CCW from +X.
+        // Skip the arc that lies inside the keyway mouth (centred on +Y).
+        const dAng = Math.abs(t - Math.PI/2);        // distance from +Y
+        if (dAng < keyHalfAng) continue;
+      }
+      const nid = nodes.length / 2;
+      boreNodes.push(nid);
+      boreCircleNodes.push(nid);
       nodes.push(rBore * Math.cos(t), rBore * Math.sin(t));
+    }
+
+    // 1b) Keyway boundary — three sides of the rectangle (the bottom is
+    //     the bore opening). These walls transmit torque between the shaft
+    //     key and the gear rim — they're the ones fully pinned, while the
+    //     bore circle above only gets a roller (radial) constraint.
+    if (hasKey) {
+      const nx = Math.max(2, Math.ceil(kw / edge));
+      const ny = Math.max(2, Math.ceil(kh / edge));
+      const addKey = (x, y) => {
+        const nid = nodes.length / 2;
+        boreNodes.push(nid);
+        keywayWallNodes.push(nid);
+        nodes.push(x, y);
+      };
+      // Left wall, bottom → top (x = -kw/2, y = rBore+step → rBore+kh)
+      for (let k = 1; k <= ny; k++) addKey(-kw/2, rBore + (k / ny) * kh);
+      // Top edge, left → right (exclusive endpoints) at y = rBore+kh
+      for (let k = 1; k < nx; k++)  addKey(-kw/2 + (k / nx) * kw, rBore + kh);
+      // Right wall, top → bottom (x = kw/2, y = rBore+kh → rBore+step)
+      for (let k = 0; k < ny; k++)  addKey(kw/2, rBore + kh - (k / ny) * kh);
     }
 
     // 2) Gear outline — resampled uniformly, defines the concave boundary.
@@ -994,6 +1091,7 @@ const FEA = (() => {
         if (rr < rBore + edge * 0.5) continue;       // inside bore
         if (rr > ra + edge) continue;                // safely outside tip
         if (!pointInRing(jx, jy, outline)) continue; // in tooth space
+        if (inKeyway(jx, jy)) continue;              // inside keyway slot
         if (tooClose(jx, jy)) continue;
         bucketAdd(jx, jy);
         nodes.push(jx, jy);
@@ -1018,6 +1116,7 @@ const FEA = (() => {
       const cr = Math.sqrt(cx*cx + cy*cy);
       if (cr < rBore) continue;                       // inside bore
       if (!pointInRing(cx, cy, outline)) continue;    // outside gear
+      if (inKeyway(cx, cy)) continue;                 // inside keyway slot
       // Ensure CCW winding for positive area (assemble() rejects degenerate).
       const area2 = (coords[2*b] - coords[2*a]) * (coords[2*c+1] - coords[2*a+1])
                   - (coords[2*c] - coords[2*a]) * (coords[2*b+1] - coords[2*a+1]);
@@ -1031,7 +1130,7 @@ const FEA = (() => {
       nodes: coords,
       tris: new Uint32Array(tris),
       nRad, nTan, nNodes, nEl,
-      boreNodes, outlineNodes,
+      boreNodes, boreCircleNodes, keywayWallNodes, outlineNodes,
       ra, rf, rb, r, rBore
     };
   }
@@ -1153,55 +1252,203 @@ const FEA = (() => {
 
   function vonMises(elems, u, E, nu) { return stressField(elems, u, E, nu).vm; }
 
-  function run({ Z, m, pa, bore, face, torque_Nm, matKey, nRad = 16, nTan = 32, loadFlank = 'right' }) {
+  function run({ Z, m, pa, bore, face, torque_Nm, matKey, nRad = 16, nTan = 32, loadFlank = 'right', keyway = null }) {
     const mat   = MATERIALS[matKey] || MATERIALS.steel;
     const E_MPa = mat.E * 1000;                    // GPa → MPa (= N/mm²)
-    const nu    = 0.30;
-    const mesh  = buildMesh({ Z, m, pa, bore, nRad, nTan });
-    const { K, elems } = assemble(mesh, E_MPa, nu, face);
+    const nu    = (typeof mat.nu === 'number') ? mat.nu : 0.30;
+    const mesh  = buildMesh({ Z, m, pa, bore, nRad, nTan, keyway });
+    const hasKeyway = !!(keyway && keyway.w > 0 && keyway.h > 0);
 
-    // BC — pin every bore-circle node (both DOFs) via large penalty.
-    let avgDiag = 0;
-    for (let i = 0; i < K.n; i++) avgDiag += (K.rows[i].get(i) || 0);
-    avgDiag /= K.n;
-    const penalty = 1e10 * avgDiag;
-    for (const nd of mesh.boreNodes) {
-      addK(K, 2*nd,   2*nd,   penalty);
-      addK(K, 2*nd+1, 2*nd+1, penalty);
-    }
-
-    // Load — apply at tooth-0's pitch-point on the chosen flank (HPSTC
-    // approximation). Tooth 0 is centered on +X; right flank at -π/(2Z).
-    const F = new Float64Array(K.n);
+    // Shared constants.
     const rPitch     = m * Z / 2;
     const paRad      = pa * Math.PI / 180;
     const flankSign  = (loadFlank === 'left') ? +1 : -1;
     const thetaPitch = flankSign * Math.PI / (2*Z);
-    const px = rPitch * Math.cos(thetaPitch);
-    const py = rPitch * Math.sin(thetaPitch);
-    // Restrict search to outline nodes (stress is applied on the surface).
+    const Ft = (torque_Nm * 1000) / rPitch;         // N  (tangential)
+    const Fn = Ft / Math.cos(paRad);                // along line of action
+
+    // Locate tooth-0's pitch-point (used by both solves for consistency).
+    const pxL = rPitch * Math.cos(thetaPitch);
+    const pyL = rPitch * Math.sin(thetaPitch);
     let bestN = mesh.outlineNodes[0], bestD2 = Infinity;
     for (const n of mesh.outlineNodes) {
-      const dx = mesh.nodes[2*n] - px, dy = mesh.nodes[2*n+1] - py;
+      const dx = mesh.nodes[2*n] - pxL, dy = mesh.nodes[2*n+1] - pyL;
       const d2 = dx*dx + dy*dy;
       if (d2 < bestD2) { bestD2 = d2; bestN = n; }
     }
-    const Ft = (torque_Nm * 1000) / rPitch;        // N  (tangential)
-    const Fn = Ft / Math.cos(paRad);               // along line of action
-    const tx = -Math.sin(thetaPitch), ty = Math.cos(thetaPitch);    // tangent CCW
-    const rx =  Math.cos(thetaPitch), ry = Math.sin(thetaPitch);    // radial outward
-    const tSign = (loadFlank === 'left') ? -1 : +1;
-    const fx = Fn * (tSign * Math.cos(paRad) * tx - Math.sin(paRad) * rx);
-    const fy = Fn * (tSign * Math.cos(paRad) * ty - Math.sin(paRad) * ry);
-    F[2*bestN]     = fx;
-    F[2*bestN + 1] = fy;
 
-    const { u, iter } = solveCG(K, F);
-    const { vm, sxx, syy, sxy } = stressField(elems, u, E_MPa, nu);
+    const keyWalls    = mesh.keywayWallNodes || [];
+    const boreCircle  = mesh.boreCircleNodes || [];
+    const boreAll     = mesh.boreNodes || [];
 
-    // Centroids per element (cached — used by the per-tooth superposition
-    // lookup below and by the renderer for spatial queries).
-    const nEl = elems.length;
+    // ==== Helpers: boundary conditions ============================
+    // Given a freshly-assembled K, add:
+    //   * fullPin = every boreNode (circle + keyway walls) pinned both DOFs.
+    //   * boreRoller = bore-circle radial pin + tangential anchor at -Y.
+    //                  Keyway walls left FREE (they'll be loaded instead).
+    function avgDiagOf(K) {
+      let s = 0; for (let i = 0; i < K.n; i++) s += (K.rows[i].get(i) || 0);
+      return s / K.n;
+    }
+    function applyFullPin(K) {
+      const penalty = 1e10 * avgDiagOf(K);
+      for (const nd of boreAll) {
+        addK(K, 2*nd,   2*nd,   penalty);
+        addK(K, 2*nd+1, 2*nd+1, penalty);
+      }
+    }
+    function applyBoreRoller(K) {
+      const penalty = 1e10 * avgDiagOf(K);
+      const targetSet = boreCircle.length ? boreCircle : boreAll;
+      for (const nd of targetSet) {
+        const x = mesh.nodes[2*nd], y = mesh.nodes[2*nd+1];
+        const r = Math.hypot(x, y) || 1;
+        const nx = x / r, ny = y / r;
+        addK(K, 2*nd,   2*nd,   penalty * nx * nx);
+        addK(K, 2*nd+1, 2*nd+1, penalty * ny * ny);
+        addK(K, 2*nd,   2*nd+1, penalty * nx * ny);
+        addK(K, 2*nd+1, 2*nd,   penalty * nx * ny);
+      }
+      // Tangential anchor at the node farthest from the keyway (≈ -Y).
+      let anchorNd = targetSet[0], anchorBest = -Infinity;
+      for (const nd of targetSet) {
+        const score = -mesh.nodes[2*nd + 1];
+        if (score > anchorBest) { anchorBest = score; anchorNd = nd; }
+      }
+      const ax = mesh.nodes[2*anchorNd], ay = mesh.nodes[2*anchorNd+1];
+      const r  = Math.hypot(ax, ay) || 1;
+      const tx0 = -ay / r, ty0 = ax / r;
+      addK(K, 2*anchorNd,   2*anchorNd,   penalty * tx0 * tx0);
+      addK(K, 2*anchorNd+1, 2*anchorNd+1, penalty * ty0 * ty0);
+      addK(K, 2*anchorNd,   2*anchorNd+1, penalty * tx0 * ty0);
+      addK(K, 2*anchorNd+1, 2*anchorNd,   penalty * tx0 * ty0);
+    }
+
+    // ==== Helpers: load application =================================
+    function applyToothLoadAt(F, nodeIdx) {
+      const tx = -Math.sin(thetaPitch), ty = Math.cos(thetaPitch);
+      const rx =  Math.cos(thetaPitch), ry = Math.sin(thetaPitch);
+      const tSign = (loadFlank === 'left') ? -1 : +1;
+      const fx = Fn * (tSign * Math.cos(paRad) * tx - Math.sin(paRad) * rx);
+      const fy = Fn * (tSign * Math.cos(paRad) * ty - Math.sin(paRad) * ry);
+      F[2*nodeIdx]     += fx;
+      F[2*nodeIdx + 1] += fy;
+    }
+    function applyKeyReaction(F) {
+      if (!hasKeyway || keyWalls.length === 0) return;
+      const kwW = keyway.w, kwH = keyway.h;
+      const rBore = mesh.rBore;
+      // Which wall does the key press against, and in which direction?
+      // -------------------------------------------------------------
+      // The shaft (via its key) delivers torque to the DRIVER gear body:
+      // for a driver rotating CCW the motor applies +T CCW, so the key at
+      // +Y pushes the rim in the CCW-tangent direction, which at +Y is -X.
+      // That means the key contacts the gear's LEFT wall (x = -kw/2) and
+      // pushes it in -X. For the DRIVEN gear the direction is opposite —
+      // the gear body transmits torque back out through the key, so the
+      // key presses the RIGHT wall in +X.
+      //
+      // loadFlank = 'right' → driver  → left wall  → loadedSign = -1
+      // loadFlank = 'left'  → driven  → right wall → loadedSign = +1
+      const loadedSign = (loadFlank === 'left') ? +1 : -1;
+      const F_key = (torque_Nm * 1000) / rBore;     // N
+      const wallNds = [];
+      for (const nd of keyWalls) {
+        const nx = mesh.nodes[2*nd];
+        const ny = mesh.nodes[2*nd+1];
+        if (Math.abs(nx - loadedSign * kwW/2) < kwW * 0.05
+            && ny > rBore - 1e-6 && ny < rBore + kwH + 1e-6) {
+          wallNds.push(nd);
+        }
+      }
+      if (wallNds.length === 0) return;
+      const per = F_key / wallNds.length;
+      for (const nd of wallNds) F[2*nd] += loadedSign * per;
+    }
+    // Apply a uniform tangential "rim reaction" by placing Ft/Z at each
+    // tooth's pitch-point nearest-node, tangent to the pitch circle. Net
+    // moment = ±T at rPitch, sign chosen so that combined with the key
+    // reaction the rim is in equilibrium.
+    //
+    // For the DRIVER gear (loadFlank='right'): teeth push the driven
+    // forward, so by Newton III the driver's teeth see a CW reaction
+    // (negative tangent). The key then provides the balancing CCW push
+    // on the left wall.
+    //
+    // For the DRIVEN gear (loadFlank='left'): teeth receive a CCW drive
+    // force (positive tangent). The key reacts CW on the right wall.
+    const rimTangentSign = (loadFlank === 'left') ? +1 : -1;
+    function applyUniformRimTorque(F) {
+      const perTooth = Ft / Z;
+      for (let j = 0; j < Z; j++) {
+        const theta = j * (2*Math.PI/Z) + thetaPitch;
+        const tpx = rPitch * Math.cos(theta);
+        const tpy = rPitch * Math.sin(theta);
+        let bn = mesh.outlineNodes[0], bd2 = Infinity;
+        for (const n of mesh.outlineNodes) {
+          const dx = mesh.nodes[2*n] - tpx, dy = mesh.nodes[2*n+1] - tpy;
+          const d2 = dx*dx + dy*dy;
+          if (d2 < bd2) { bd2 = d2; bn = n; }
+        }
+        // Tangent direction (CCW perpendicular to radius, signed by
+        // driver/driven convention — see rimTangentSign above).
+        const ttx = -Math.sin(theta) * rimTangentSign;
+        const tty =  Math.cos(theta) * rimTangentSign;
+        F[2*bn]     += perTooth * ttx;
+        F[2*bn + 1] += perTooth * tty;
+      }
+    }
+
+    // ==================================================================
+    // SOLVE A — rotationally-symmetric "tooth" solve.
+    //   Tooth-0 loaded at pitch-point.
+    //   Bore + keyway walls FULLY PINNED (no keyway reaction).
+    //   Gives the per-tooth stress signature that can be legitimately
+    //   rotated and summed via the influence map.
+    //
+    //   When hasKeyway=false we pin only boreAll (which is just the circle),
+    //   which is effectively the same rotationally-symmetric BC.
+    // ==================================================================
+    const asmA = assemble(mesh, E_MPa, nu, face);
+    applyFullPin(asmA.K);
+    const FA = new Float64Array(asmA.K.n);
+    applyToothLoadAt(FA, bestN);
+    const { u: uA, iter: iterA } = solveCG(asmA.K, FA);
+    const sA = stressField(asmA.elems, uA, E_MPa, nu);
+
+    // ==================================================================
+    // SOLVE B — asymmetric "keyway" solve (only when a keyway exists).
+    //   Uniform rim tangential traction (sums to T at pitch radius)
+    //   + key reaction on loaded wall
+    //   + bore rollers & tangential anchor at -Y.
+    //   Gives the stress in the hub due to the torque being reacted
+    //   through the keyway rather than a uniform pin. This part does NOT
+    //   rotate with the loaded tooth — it's static in gear frame.
+    // ==================================================================
+    const nEl = asmA.elems.length;
+    let uB, sxxB, syyB, sxyB, iterB = 0;
+    if (hasKeyway) {
+      const asmB = assemble(mesh, E_MPa, nu, face);
+      applyBoreRoller(asmB.K);
+      const FB = new Float64Array(asmB.K.n);
+      applyUniformRimTorque(FB);
+      applyKeyReaction(FB);
+      const solB = solveCG(asmB.K, FB);
+      uB = solB.u; iterB = solB.iter;
+      const sB = stressField(asmB.elems, uB, E_MPa, nu);
+      sxxB = sB.sxx; syyB = sB.syy; sxyB = sB.sxy;
+    } else {
+      uB   = new Float64Array(2 * mesh.nNodes);
+      sxxB = new Float64Array(nEl);
+      syyB = new Float64Array(nEl);
+      sxyB = new Float64Array(nEl);
+    }
+
+    // Use solve A's references for superposition; keep both stress tensors.
+    const sxx = sA.sxx, syy = sA.syy, sxy = sA.sxy, vm = sA.vm;
+    const u   = uA;
+    const elems = asmA.elems;
+    const iter  = iterA + iterB;
     const cents = new Float64Array(2 * nEl);
     for (let e = 0; e < nEl; e++) {
       const nn = elems[e].n;
@@ -1253,10 +1500,63 @@ const FEA = (() => {
       }
     }
 
-    let maxVM = 0, maxEl = 0;
-    for (let i = 0; i < vm.length; i++) if (vm[i] > maxVM) { maxVM = vm[i]; maxEl = i; }
+    // Per-node displacement magnitudes for both solves (used by the
+    // deformed-mesh view and for auto-scaling the legend).
+    const dispNode   = new Float64Array(mesh.nNodes);  // solve A
+    const dispNode_B = new Float64Array(mesh.nNodes);  // solve B
+    for (let k = 0; k < mesh.nNodes; k++) {
+      dispNode[k]   = Math.sqrt(uA[2*k]*uA[2*k] + uA[2*k+1]*uA[2*k+1]);
+      dispNode_B[k] = Math.sqrt(uB[2*k]*uB[2*k] + uB[2*k+1]*uB[2*k+1]);
+    }
+    const dispEl   = new Float64Array(nEl);
+    const dispEl_B = new Float64Array(nEl);
+    for (let e = 0; e < nEl; e++) {
+      const nn = elems[e].n;
+      dispEl[e]   = (dispNode  [nn[0]] + dispNode  [nn[1]] + dispNode  [nn[2]]) / 3;
+      dispEl_B[e] = (dispNode_B[nn[0]] + dispNode_B[nn[1]] + dispNode_B[nn[2]]) / 3;
+    }
+
+    // Per-element strain energy density  U = ½ σ:ε  (plane stress).
+    // This is solve-A-only (historical); drawGearFEA recomputes the true
+    // combined strain energy from the superposed tensor each frame.
+    const strainU = new Float64Array(nEl);
+    for (let e = 0; e < nEl; e++) {
+      const sx = sxx[e], sy = syy[e], txy = sxy[e];
+      const ex  = (sx - nu*sy) / E_MPa;
+      const ey  = (sy - nu*sx) / E_MPa;
+      const gxy = 2 * (1 + nu) * txy / E_MPa;
+      strainU[e] = 0.5 * (sx*ex + sy*ey + txy*gxy);
+    }
+
+    // Reference maxima = what the element sees when a single tooth is
+    // fully loaded (superposition weights = 1). These anchor the legend.
+    let maxVM = 0, maxEl = 0, maxU = 0;
+    for (let e = 0; e < nEl; e++) {
+      const sx = sxx[e] + sxxB[e];
+      const sy = syy[e] + syyB[e];
+      const tx = sxy[e] + sxyB[e];
+      const v  = Math.sqrt(sx*sx - sx*sy + sy*sy + 3*tx*tx);
+      if (v > maxVM) { maxVM = v; maxEl = e; }
+      const ex  = (sx - nu*sy) / E_MPa;
+      const ey  = (sy - nu*sx) / E_MPa;
+      const gxy = 2 * (1 + nu) * tx / E_MPa;
+      const U   = 0.5 * (sx*ex + sy*ey + tx*gxy);
+      if (U > maxU) maxU = U;
+    }
+    let maxDisp = 0;
+    for (let k = 0; k < mesh.nNodes; k++) {
+      const dx = uA[2*k]   + uB[2*k];
+      const dy = uA[2*k+1] + uB[2*k+1];
+      const d  = Math.sqrt(dx*dx + dy*dy);
+      if (d > maxDisp) maxDisp = d;
+    }
 
     return { mesh, u, vm, sxx, syy, sxy, cents, influenceMap,
+             // Solve B (static, gear-frame) fields for combined rendering:
+             sxx_B: sxxB, syy_B: syyB, sxy_B: sxyB,
+             u_B:   uB,   dispEl_B, dispNode_B,
+             hasKeyway,
+             dispEl, dispNode, strainU, maxDisp, maxStrainU: maxU,
              maxVM, maxEl, iter, loadNode: bestN, material: mat,
              E_MPa, nu, torque_Nm, face, Ft, Fn, pa, loadFlank, Z, tau };
   }
@@ -1410,10 +1710,12 @@ function setupFEADualGear() {
 
   // Cache key: any change here invalidates the solve. Slider drags that
   // don't affect these (e.g. camera, colourmap) reuse the cached solution.
+  const keyway1 = i.showKey ? keyDims(i.bore1) : null;
+  const keyway2 = i.showKey ? keyDims(i.bore2) : null;
   const key = [i.z1, i.z2, i.mod, i.pressure, i.bore1, i.bore2,
                i.face1, i.face2, i.mat1, i.mat2, i.cdOffset,
                Math.round(T1*1e3), Math.round(T2*1e3),
-               nRad, nTan].join('|');
+               nRad, nTan, i.showKey ? 'K' : 'N'].join('|');
   if (state.fea && state.fea._key === key) {
     // Rebuild physics world only if center distance changed; otherwise reuse.
     return;
@@ -1434,10 +1736,10 @@ function setupFEADualGear() {
     // Gear 2 (driven) : drive force loads its LEFT flank
     g1 = FEA.run({ Z: i.z1, m: i.mod, pa: i.pressure, bore: i.bore1, face: i.face1,
                    matKey: i.mat1, torque_Nm: Math.max(T1, 0.001),
-                   nRad, nTan, loadFlank: 'right' });
+                   nRad, nTan, loadFlank: 'right', keyway: keyway1 });
     g2 = FEA.run({ Z: i.z2, m: i.mod, pa: i.pressure, bore: i.bore2, face: i.face2,
                    matKey: i.mat2, torque_Nm: Math.max(T2, 0.001),
-                   nRad, nTan, loadFlank: 'left' });
+                   nRad, nTan, loadFlank: 'left', keyway: keyway2 });
   } catch (err) {
     console.error('FEA solve failed', err);
     return;
@@ -1470,13 +1772,30 @@ function setupFEADualGear() {
       : COLORMAPS[heatmapState.preset] || COLORMAPS.thermal;
     const gradient = stops.map((c, k) =>
       `rgb(${(c[0]*255)|0},${(c[1]*255)|0},${(c[2]*255)|0}) ${(k*25)}%`).join(', ');
-    const vmax = Math.max(g1.maxVM, g2.maxVM);
+    const fieldSel = document.getElementById('feaField');
+    const field = fieldSel ? fieldSel.value : 'vm';
+    const FIELD_META = {
+      vm:     { label: 'σ vM',   unit: 'MPa',    src: () => Math.max(g1.maxVM, g2.maxVM) },
+      sxx:    { label: '|σxx|',  unit: 'MPa',    src: () => Math.max(g1.maxVM, g2.maxVM) },
+      syy:    { label: '|σyy|',  unit: 'MPa',    src: () => Math.max(g1.maxVM, g2.maxVM) },
+      sxy:    { label: '|τxy|',  unit: 'MPa',    src: () => Math.max(g1.maxVM, g2.maxVM) },
+      s1:     { label: 'σ₁',     unit: 'MPa',    src: () => Math.max(g1.maxVM, g2.maxVM) },
+      s2:     { label: 'σ₂',     unit: 'MPa',    src: () => Math.max(g1.maxVM, g2.maxVM) },
+      shear:  { label: 'τmax',   unit: 'MPa',    src: () => Math.max(g1.maxVM, g2.maxVM) },
+      disp:   { label: '|u|',    unit: 'µm',     src: () => Math.max(g1.maxDisp, g2.maxDisp) * 1000 },
+      strain: { label: 'U',      unit: 'mJ/mm³', src: () => Math.max(g1.maxStrainU, g2.maxStrainU) },
+      safety: { label: 'σ/σy',   unit: '',       src: () => Math.max(
+                  g1.maxVM / (g1.material.yield || 1),
+                  g2.maxVM / (g2.material.yield || 1)) },
+    };
+    const meta = FIELD_META[field] || FIELD_META.vm;
+    const vmaxLegend = meta.src();
     legend.innerHTML = `
       <div class="flex items-center gap-2">
         <span>0</span>
         <span class="inline-block rounded" style="width:96px;height:8px;background:linear-gradient(to right,${gradient})"></span>
-        <span>${vmax.toFixed(1)}</span>
-        <span class="text-slate-500">MPa vM</span>
+        <span>${vmaxLegend.toFixed(vmaxLegend < 10 ? 2 : 1)}</span>
+        <span class="text-slate-500">${meta.unit} ${meta.label}</span>
       </div>
     `;
   }
@@ -1511,15 +1830,149 @@ function drawGearOutline(ctx, proj, cx, cy, rot, Z, m, pa, bore, matColorHex) {
   ctx.stroke();
 }
 
-// Paint the stress field on each tooth. `loads` is an array of length Z:
-// loads[k] ∈ [0, 1+] = fraction of nominal torque load carried by tooth k
-// right now, derived from geometric proximity to the mating gear's teeth.
-// Values > 1 mean interference → painted with a magenta tint.
-function drawGearFEA(ctx, proj, cx, cy, gearRot, fea, Z, loads, vmax, stops) {
+// Draw the bore hole (and optional DIN-6885 keyway) on top of the FEA mesh.
+// The keyway is actually part of the mesh (carved out in buildMesh), so this
+// only draws the outline stroke to make the boundary crisp. The bore disc is
+// still filled with the background colour in case any stray element slipped
+// through the cull.
+function drawBoreMask(ctx, proj, cx, cy, rot, bore, keyway, matColorHex) {
+  const [bx, by] = proj(cx, cy);
+  const [bex]    = proj(cx + bore/2, cy);
+  const rPx      = Math.abs(bex - bx);
+  ctx.strokeStyle = matColorHex + 'cc';
+  ctx.lineWidth   = 1;
+
+  if (!keyway) {
+    // No keyway → simple disc mask + stroke.
+    ctx.fillStyle = '#020617';
+    ctx.beginPath();
+    ctx.arc(bx, by, rPx, 0, 2*Math.PI);
+    ctx.fill();
+    ctx.stroke();
+    return;
+  }
+
+  // With a keyway, build a compound path: bore arc (minus the keyway mouth)
+  // + the three keyway walls. We do this in gear-local space, rotated by
+  // the current gear angle, then projected.
+  if (typeof keyDims !== 'function') return;
+  const kd = keyDims(bore);
+  const kw = kd.w, kh = kd.h;
+  const rIn = bore / 2;
+  const halfAng = Math.asin(Math.min((kw/2) / rIn, 0.95));
+  const startAng = Math.PI/2 + halfAng;              // just past +Y CCW
+  const endAng   = Math.PI/2 - halfAng + 2*Math.PI;  // sweep back around
+  const c = Math.cos(rot), s = Math.sin(rot);
+  const worldPt = (lx, ly) => proj(cx + lx*c - ly*s, cy + lx*s + ly*c);
+
+  // Sample bore arc (skipping keyway mouth) as a polyline — simpler than
+  // rotating the arc in canvas space with a precomputed transform.
+  const nArc = 96;
+  const arcPts = [];
+  for (let k = 0; k <= nArc; k++) {
+    const ang = startAng + (endAng - startAng) * k / nArc;
+    arcPts.push([rIn * Math.cos(ang), rIn * Math.sin(ang)]);
+  }
+  // Keyway walls — go from one mouth corner up the side, across the top,
+  // down the other side, back to the other mouth corner.
+  const keyPts = [
+    [-kw/2, rIn],        [-kw/2, rIn + kh],
+    [ kw/2, rIn + kh],   [ kw/2, rIn],
+  ];
+
+  // Start at the first arc point (which is just past the keyway mouth CCW)
+  // and walk: arc → keyway right mouth → top → left → back to arc start.
+  ctx.fillStyle = '#020617';
+  ctx.beginPath();
+  let first = true;
+  for (const [lx, ly] of arcPts) {
+    const [px, py] = worldPt(lx, ly);
+    if (first) { ctx.moveTo(px, py); first = false; } else ctx.lineTo(px, py);
+  }
+  for (const [lx, ly] of keyPts) {
+    const [px, py] = worldPt(lx, ly);
+    ctx.lineTo(px, py);
+  }
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+}
+
+// Decorative idler for the 2-D FEA view. Solves a quick FEA once, caches it
+// on state.fea.idler, and renders it with formula-based rotation (idler
+// reverses and stages the ratio: ω_idler = -ω_driver · z1 / z_idler).
+// NOT integrated into the physics world — it's a visual marker only, since
+// adding a 3-body physics chain would change the whole solve topology.
+function drawIdlerFEA(ctx, proj, fea, inp, rot1, vmax, stops, field,
+                      deformed, deformScale, drawKeyway) {
+  const m = inp.mod;
+  const zI = Math.max(12, Math.round((inp.z1 + inp.z2) / 4));
+  const rIdler = m * zI / 2;
+  // Position between driver and driven, slightly above the axis line.
+  const C   = fea.center;
+  const ixC = C / 2;
+  const iyC = (m*inp.z1/2 + rIdler) / 2 + 6;
+  // Rotation direction is reversed vs. the driver, and scaled by tooth ratio.
+  const rotI = -rot1 * inp.z1 / zI;
+
+  // Cache the solved idler FEA keyed by the parameters that affect it.
+  const keywayI = inp.showKey ? keyDims(inp.bore1) : null;
+  const key = [zI, m, inp.pressure, inp.bore1, inp.face1, inp.mat1,
+               inp.showKey ? 'K' : 'N'].join('|');
+  if (!fea.idler || fea.idler._key !== key) {
+    try {
+      const [nRad, nTan] = document.getElementById('feaRes').value.split(',').map(Number);
+      const T1 = (state.torques && state.torques.T1) || 0.1;
+      const torqueI_Nm = Math.max(0.001, T1);
+      const g = FEA.run({
+        Z: zI, m, pa: inp.pressure, bore: inp.bore1, face: inp.face1,
+        matKey: inp.mat1, torque_Nm: torqueI_Nm,
+        nRad, nTan, loadFlank: 'right', keyway: keywayI,
+      });
+      g._key = key;
+      fea.idler = g;
+    } catch (err) {
+      console.warn('idler FEA failed', err);
+      return;
+    }
+  }
+  const gI = fea.idler;
+  // No physics contacts for idler — give it a flat broadcast of load so the
+  // whole-body field is at least visible (peak from driver side).
+  const loadsI = new Float64Array(zI);
+  loadsI[0] = Math.min((fea._contact?.factor || 1), 1.2);
+  const col = '#fbbf24';                              // amber (matches 3-D)
+  drawGearOutline(ctx, proj, ixC, iyC, rotI, zI, m, inp.pressure, inp.bore1, col);
+  drawGearFEA(ctx, proj, ixC, iyC, rotI, gI, zI, loadsI, vmax, stops,
+              field, deformed, deformScale);
+  drawBoreMask(ctx, proj, ixC, iyC, rotI, inp.bore1, drawKeyway, col);
+  // Label so user knows it's decorative.
+  const [lpx, lpy] = proj(ixC, iyC + rIdler + m*1.2);
+  ctx.fillStyle = 'rgba(251, 191, 36, 0.85)';
+  ctx.font = '10px ui-monospace,monospace';
+  ctx.textAlign = 'center';
+  ctx.fillText(`idler z=${zI} · visual only`, lpx, lpy);
+  ctx.textAlign = 'start';
+}
+
+// Paint a chosen scalar field on the gear. `loads[k]` scales the contribution
+// of tooth k (linear solver → σ ∝ load). `field` selects which scalar to draw.
+// `deformed` applies the displacement field to node positions (exaggerated).
+function drawGearFEA(ctx, proj, cx, cy, gearRot, fea, Z, loads, vmax, stops,
+                    field = 'vm', deformed = false, deformScale = 1) {
   const mesh = fea.mesh, tris = mesh.tris, nodes = mesh.nodes;
-  const { sxx, syy, sxy, influenceMap } = fea;
+  const { sxx, syy, sxy, influenceMap, u, dispEl, strainU,
+          sxx_B, syy_B, sxy_B, u_B, dispEl_B, hasKeyway } = fea;
+  const E_MPa = fea.E_MPa, nu = fea.nu;
+  const yieldMPa = (fea.material && fea.material.yield) ? fea.material.yield : 1;
   const nEl = mesh.nEl;
   const tau = 2*Math.PI / Z;
+
+  // Sum of tooth loads — scales solve B's contribution (solve B carries the
+  // full gear-frame static response per unit transmitted torque, so we
+  // weight it by how much of the rated torque is currently being reacted).
+  let sumLoads = 0;
+  for (let k = 0; k < Z; k++) sumLoads += loads[k];
 
   const heatColor = (v) => {
     let t = v / Math.max(vmax, 1e-9);
@@ -1531,23 +1984,22 @@ function drawGearFEA(ctx, proj, cx, cy, gearRot, fea, Z, loads, vmax, stops) {
     return [c0[0]+(c1[0]-c0[0])*ff, c0[1]+(c1[1]-c0[1])*ff, c0[2]+(c1[2]-c0[2])*ff];
   };
 
-  // Precompute rotation cos/sin per tooth index (for tensor rotation of
-  // tooth-j's contribution back into the world/gear-local frame).
   const cosJ = new Float64Array(Z), sinJ = new Float64Array(Z);
   for (let j = 0; j < Z; j++) {
     cosJ[j] = Math.cos(j * tau);
     sinJ[j] = Math.sin(j * tau);
   }
 
-  // Peak load — for the magenta interference tint.
   let peakLoad = 0;
   for (let k = 0; k < Z; k++) if (loads[k] > peakLoad) peakLoad = loads[k];
   const tint = (peakLoad > 1.0) ? Math.min((peakLoad - 1) * 0.6, 0.55) : 0;
 
-  // Per-element tensor superposition: stress at element e is the weighted
-  // sum over all teeth j of the tooth-0 stress evaluated at R(-j·τ)·p_e,
-  // then rotated back by R(j·τ). Rotational symmetry + single solve.
-  const cRot = Math.cos(gearRot), sRot = Math.sin(gearRot);
+  // Precompute per-element superposed tensor components and nodal disps
+  // once — we need the tensor for all tensor-derived fields and nodal disps
+  // for the deformed-mesh view.
+  const SxxArr = new Float64Array(nEl);
+  const SyyArr = new Float64Array(nEl);
+  const SxyArr = new Float64Array(nEl);
   for (let e = 0; e < nEl; e++) {
     let Sxx = 0, Syy = 0, Sxy = 0;
     for (let j = 0; j < Z; j++) {
@@ -1556,28 +2008,164 @@ function drawGearFEA(ctx, proj, cx, cy, gearRot, fea, Z, loads, vmax, stops) {
       const eRef = influenceMap[e*Z + j];
       if (eRef < 0) continue;
       const s_xx = sxx[eRef], s_yy = syy[eRef], s_xy = sxy[eRef];
-      // Rotate 2-D stress tensor by j·τ: σ' = R σ Rᵀ
       const c = cosJ[j], s = sinJ[j];
       const c2 = c*c, s2 = s*s, cs = c*s;
       Sxx += w * (c2*s_xx - 2*cs*s_xy + s2*s_yy);
       Syy += w * (s2*s_xx + 2*cs*s_xy + c2*s_yy);
       Sxy += w * (cs*(s_xx - s_yy) + (c2 - s2)*s_xy);
     }
-    const vm = Math.sqrt(Sxx*Sxx - Sxx*Syy + Syy*Syy + 3*Sxy*Sxy);
-    let [cr, cg, cb] = heatColor(vm);
+    // Solve B contribution — static in gear frame (no rotation), scaled
+    // by the total transmitted-torque fraction currently in mesh.
+    if (hasKeyway && sumLoads > 0) {
+      Sxx += sumLoads * sxx_B[e];
+      Syy += sumLoads * syy_B[e];
+      Sxy += sumLoads * sxy_B[e];
+    }
+    SxxArr[e] = Sxx; SyyArr[e] = Syy; SxyArr[e] = Sxy;
+  }
+
+  // Scalar per element from the superposed tensor (and/or from dispEl).
+  const scalar = new Float64Array(nEl);
+  const nodesCount = mesh.nNodes;
+  const nodeDisp = deformed ? new Float64Array(2 * nodesCount) : null;
+
+  // For deformed mode: superpose nodal displacements across teeth.
+  if (deformed) {
+    // Lazily build a per-node × per-tooth influence cache (analogous to
+    // influenceMap for elements). Stores the element index whose centroid
+    // is closest to R(-j·τ)·node — we then use that element's mean nodal
+    // displacement as the vector displacement contribution for tooth j.
+    if (!fea._nodeInfluenceMap) {
+      const map = new Int32Array(nodesCount * Z);
+      const cents = fea.cents;
+      for (let kn = 0; kn < nodesCount; kn++) {
+        const nx = nodes[2*kn], ny = nodes[2*kn+1];
+        for (let j = 0; j < Z; j++) {
+          const c = cosJ[j], s = sinJ[j];
+          const rx =  nx*c + ny*s;
+          const ry = -nx*s + ny*c;
+          let best = 0, bd2 = Infinity;
+          for (let ee = 0; ee < nEl; ee++) {
+            const ddx = rx - cents[2*ee], ddy = ry - cents[2*ee+1];
+            const d2 = ddx*ddx + ddy*ddy;
+            if (d2 < bd2) { bd2 = d2; best = ee; }
+          }
+          map[kn*Z + j] = best;
+        }
+      }
+      fea._nodeInfluenceMap = map;
+    }
+    const nodeInfl = fea._nodeInfluenceMap;
+    const triIdx   = fea.mesh.tris;
+    for (let kn = 0; kn < nodesCount; kn++) {
+      let dx = 0, dy = 0;
+      for (let j = 0; j < Z; j++) {
+        const w = loads[j];
+        if (!w || w < 0.005) continue;
+        const eRef = nodeInfl[kn*Z + j];
+        const n1 = triIdx[3*eRef], n2 = triIdx[3*eRef+1], n3 = triIdx[3*eRef+2];
+        const uxRef = (u[2*n1]   + u[2*n2]   + u[2*n3])   / 3;
+        const uyRef = (u[2*n1+1] + u[2*n2+1] + u[2*n3+1]) / 3;
+        const Cc = cosJ[j], Ss = sinJ[j];
+        dx += w * (uxRef * Cc - uyRef * Ss);
+        dy += w * (uxRef * Ss + uyRef * Cc);
+      }
+      // Add the static solve-B nodal displacement (no rotation), scaled
+      // by total tooth load.
+      if (hasKeyway && sumLoads > 0) {
+        dx += sumLoads * u_B[2*kn];
+        dy += sumLoads * u_B[2*kn+1];
+      }
+      nodeDisp[2*kn]   = dx;
+      nodeDisp[2*kn+1] = dy;
+    }
+  }
+
+  // Compute the selected scalar per element.
+  for (let e = 0; e < nEl; e++) {
+    const Sxx = SxxArr[e], Syy = SyyArr[e], Sxy = SxyArr[e];
+    let v = 0;
+    switch (field) {
+      case 'vm':
+        v = Math.sqrt(Sxx*Sxx - Sxx*Syy + Syy*Syy + 3*Sxy*Sxy); break;
+      case 'sxx':
+        v = Math.abs(Sxx); break;
+      case 'syy':
+        v = Math.abs(Syy); break;
+      case 'sxy':
+        v = Math.abs(Sxy); break;
+      case 's1': {
+        const mean = 0.5*(Sxx + Syy);
+        const rad  = Math.sqrt(0.25*(Sxx-Syy)*(Sxx-Syy) + Sxy*Sxy);
+        v = Math.abs(mean + rad); break;
+      }
+      case 's2': {
+        const mean = 0.5*(Sxx + Syy);
+        const rad  = Math.sqrt(0.25*(Sxx-Syy)*(Sxx-Syy) + Sxy*Sxy);
+        v = Math.abs(mean - rad); break;
+      }
+      case 'shear': {
+        const rad = Math.sqrt(0.25*(Sxx-Syy)*(Sxx-Syy) + Sxy*Sxy);
+        v = rad; break;
+      }
+      case 'disp': {
+        // Scalar-display approximation: sum of per-tooth |u_A| magnitudes
+        // (rotation preserves magnitude) plus |u_B| scaled by sumLoads.
+        // This slightly overestimates the true |Σu| but is visually clear.
+        let D = 0;
+        for (let j = 0; j < Z; j++) {
+          const w = loads[j];
+          if (!w || w < 0.005) continue;
+          const eRef = influenceMap[e*Z + j];
+          if (eRef < 0) continue;
+          D += w * dispEl[eRef];
+        }
+        if (hasKeyway && sumLoads > 0) D += sumLoads * dispEl_B[e];
+        v = D; break;
+      }
+      case 'strain': {
+        // Correct plane-stress strain-energy density from the COMBINED
+        // tensor: U = (1/2E)·[σxx² + σyy² − 2ν σxx σyy + 2(1+ν) σxy²]
+        v = (Sxx*Sxx + Syy*Syy - 2*nu*Sxx*Syy + 2*(1+nu)*Sxy*Sxy)
+            / (2 * E_MPa);
+        break;
+      }
+      case 'safety': {
+        // Utilisation factor σvM / σyield. Values ≥ 1 mean the material
+        // has yielded locally under the applied load.
+        const vm_ = Math.sqrt(Sxx*Sxx - Sxx*Syy + Syy*Syy + 3*Sxy*Sxy);
+        v = vm_ / Math.max(yieldMPa, 1e-9);
+        break;
+      }
+      default:
+        v = Math.sqrt(Sxx*Sxx - Sxx*Syy + Syy*Syy + 3*Sxy*Sxy);
+    }
+    scalar[e] = v;
+  }
+
+  const cRot = Math.cos(gearRot), sRot = Math.sin(gearRot);
+  for (let e = 0; e < nEl; e++) {
+    let [cr, cg, cb] = heatColor(scalar[e]);
     if (tint > 0) {
       cr = cr*(1-tint) + 0.95*tint;
       cg = cg*(1-tint) + 0.10*tint;
       cb = cb*(1-tint) + 0.75*tint;
     }
-
     const n1 = tris[3*e], n2 = tris[3*e+1], n3 = tris[3*e+2];
-    const l1x = nodes[2*n1],   l1y = nodes[2*n1+1];
-    const l2x = nodes[2*n2],   l2y = nodes[2*n2+1];
-    const l3x = nodes[2*n3],   l3y = nodes[2*n3+1];
-    const [a, b]  = proj(cx + l1x*cRot - l1y*sRot, cy + l1x*sRot + l1y*cRot);
+    let l1x = nodes[2*n1],   l1y = nodes[2*n1+1];
+    let l2x = nodes[2*n2],   l2y = nodes[2*n2+1];
+    let l3x = nodes[2*n3],   l3y = nodes[2*n3+1];
+    if (deformed && nodeDisp) {
+      l1x += nodeDisp[2*n1]   * deformScale;
+      l1y += nodeDisp[2*n1+1] * deformScale;
+      l2x += nodeDisp[2*n2]   * deformScale;
+      l2y += nodeDisp[2*n2+1] * deformScale;
+      l3x += nodeDisp[2*n3]   * deformScale;
+      l3y += nodeDisp[2*n3+1] * deformScale;
+    }
+    const [a, b]    = proj(cx + l1x*cRot - l1y*sRot, cy + l1x*sRot + l1y*cRot);
     const [c2p, d2] = proj(cx + l2x*cRot - l2y*sRot, cy + l2x*sRot + l2y*cRot);
-    const [f, g]  = proj(cx + l3x*cRot - l3y*sRot, cy + l3x*sRot + l3y*cRot);
+    const [f, g]    = proj(cx + l3x*cRot - l3y*sRot, cy + l3x*sRot + l3y*cRot);
     ctx.fillStyle = `rgb(${(cr*255)|0},${(cg*255)|0},${(cb*255)|0})`;
     ctx.beginPath();
     ctx.moveTo(a, b); ctx.lineTo(c2p, d2); ctx.lineTo(f, g); ctx.closePath();
@@ -1592,30 +2180,42 @@ function drawGearFEA(ctx, proj, cx, cy, gearRot, fea, Z, loads, vmax, stops) {
 // `contacts` = array of { x, y, depth } in world (Y-up, mm).
 // `cxGear`, `cyGear` = world centre of the gear being loaded.
 // `Z` = tooth count; `rotGear` = gear rotation angle; `ra` = tip radius.
+//
+// Each contact is NOT hard-binned into a single tooth; instead we smear it
+// across the 3 nearest teeth with a cosine kernel so that as the contact
+// drifts around the rim the load fades smoothly between adjacent teeth
+// (kills the "lit tooth jumps" visual flicker).
 function computeToothLoadsFromContacts(contacts, cxGear, cyGear, Z, rotGear, ra, globalFactor) {
   const loads = new Float64Array(Z);
   if (globalFactor <= 0 || !contacts || contacts.length === 0) return loads;
 
   const tau = 2 * Math.PI / Z;
-  // A contact is "on this gear" if its world position is within the gear's
-  // tip-circle radius (plus a small slack for penetration into the mating).
   const rMax = ra * 1.02;
+  const kernelHalfWidth = tau;                   // full ±1 tooth neighbourhood
 
   let totalW = 0;
   for (const c of contacts) {
     const dx = c.x - cxGear, dy = c.y - cyGear;
     const r  = Math.sqrt(dx*dx + dy*dy);
-    if (r > rMax) continue;                        // contact lies on other gear
-    const ang = Math.atan2(dy, dx) - rotGear;      // gear-local angle
-    // Nearest tooth index (tooth 0 centreline sits at local θ=0).
-    let k = Math.round(ang / tau);
-    k = ((k % Z) + Z) % Z;
-    // Weight by penetration depth (∝ contact force in a penalty contact solver).
-    // A small radial-position bias (r ≥ pitch radius ≈ ra - m) favours flank
-    // contacts over root contacts, but simple linear works well in practice.
+    if (r > rMax) continue;                      // contact lies on other gear
+    const ang = Math.atan2(dy, dx) - rotGear;    // gear-local angle
     const w = Math.max(c.depth, 1e-6);
-    loads[k] += w;
-    totalW  += w;
+
+    // Distribute across nearest teeth via a raised-cosine kernel on the
+    // signed angular distance to each tooth's centreline.
+    const kCentre = Math.round(ang / tau);
+    for (let off = -1; off <= 1; off++) {
+      const k = ((kCentre + off) % Z + Z) % Z;
+      let d = ang - k * tau;
+      // wrap to [-π, π]
+      d = Math.atan2(Math.sin(d), Math.cos(d));
+      const t = Math.abs(d) / kernelHalfWidth;
+      if (t >= 1) continue;
+      // raised cosine: 1 at d=0, 0 at d=±kernelHalfWidth, C¹-continuous
+      const win = 0.5 * (1 + Math.cos(Math.PI * t));
+      loads[k] += w * win;
+      totalW  += w * win;
+    }
   }
 
   if (totalW > 0) {
@@ -1826,7 +2426,27 @@ function renderFEAFrame() {
   const stops = heatmapState.preset === 'custom'
     ? heatmapState.custom
     : COLORMAPS[heatmapState.preset] || COLORMAPS.thermal;
-  const vmax = Math.max(fea.g1.maxVM, fea.g2.maxVM, 1e-9);
+  const fieldSel = document.getElementById('feaField');
+  const field = fieldSel ? fieldSel.value : 'vm';
+  const deformed = !!(document.getElementById('feaDeformed')?.checked);
+  // For tensor-derived fields we reuse maxVM as the scalebar reference;
+  // for displacement and strain energy we use their per-field maxima.
+  let vmax;
+  switch (field) {
+    case 'disp':   vmax = Math.max(fea.g1.maxDisp,    fea.g2.maxDisp,    1e-9); break;
+    case 'strain': vmax = Math.max(fea.g1.maxStrainU, fea.g2.maxStrainU, 1e-9); break;
+    case 'safety': {
+      // Fixed scale 0..1.2 so yellow ≈ 80 % of yield and red = at yield.
+      // Makes colours directly readable as utilisation ratio.
+      vmax = 1.2;
+      break;
+    }
+    default:       vmax = Math.max(fea.g1.maxVM,      fea.g2.maxVM,      1e-9);
+  }
+  // Deformed-mesh exaggeration: scale peak nodal displacement to ~12 % of
+  // module for visual clarity, same factor for both gears.
+  const dispRef = Math.max(fea.g1.maxDisp, fea.g2.maxDisp, 1e-9);
+  const deformScale = deformed ? (0.12 * m) / dispRef : 0;
 
   // Pull REAL contact points out of the Matter.js world (post-step). Each
   // contact has a world position and a penetration depth we use as a proxy
@@ -1847,16 +2467,56 @@ function renderFEAFrame() {
   } else if (err > backlashTol) {
     gFactor = 0;                                    // no contacts → no load
   }
+  // Temporal smoothing — the Matter.js contact manifold pops on/off every
+  // few frames as teeth engage; without this the colormap flickers. An
+  // exponential moving average with τ≈120 ms gives a stable reading while
+  // still responding to genuine load changes.
+  {
+    const tauMs = 120;
+    const alpha = Math.min(1, (dt * 1000) / tauMs);
+    if (!Number.isFinite(fea._gFactorEMA)) fea._gFactorEMA = gFactor;
+    fea._gFactorEMA += (gFactor - fea._gFactorEMA) * alpha;
+    gFactor = fea._gFactorEMA;
+  }
   fea._contact.factor = gFactor;
 
   // Per-tooth load fractions from the ACTUAL Matter.js contact manifold.
   // Contacts in world are partitioned onto whichever gear they belong to
   // (by distance from each centre) and binned by tooth angular index.
-  const loads1 = computeToothLoadsFromContacts(realContacts, 0, 0, i.z1, rot1, ra1, gFactor);
-  const loads2 = computeToothLoadsFromContacts(realContacts, C, 0, i.z2, rot2, ra2, gFactor);
+  let loads1 = computeToothLoadsFromContacts(realContacts, 0, 0, i.z1, rot1, ra1, gFactor);
+  let loads2 = computeToothLoadsFromContacts(realContacts, C, 0, i.z2, rot2, ra2, gFactor);
 
-  drawGearFEA(ctx, proj, 0, 0, rot1, fea.g1, i.z1, loads1, vmax, stops);
-  drawGearFEA(ctx, proj, C, 0, rot2, fea.g2, i.z2, loads2, vmax, stops);
+  // Temporal EMA on the per-tooth load arrays too — same reason as gFactor.
+  // Uses the same τ so gFactor and loads stay in phase.
+  {
+    const tauMs = 120;
+    const alpha = Math.min(1, (dt * 1000) / tauMs);
+    const smooth = (prev, next) => {
+      if (!prev || prev.length !== next.length) return next.slice();
+      for (let k = 0; k < next.length; k++) prev[k] += (next[k] - prev[k]) * alpha;
+      return prev;
+    };
+    fea._loads1EMA = smooth(fea._loads1EMA, loads1);
+    fea._loads2EMA = smooth(fea._loads2EMA, loads2);
+    loads1 = fea._loads1EMA;
+    loads2 = fea._loads2EMA;
+  }
+
+  drawGearFEA(ctx, proj, 0, 0, rot1, fea.g1, i.z1, loads1, vmax, stops, field, deformed, deformScale);
+  drawGearFEA(ctx, proj, C, 0, rot2, fea.g2, i.z2, loads2, vmax, stops, field, deformed, deformScale);
+
+  // Bore + keyway mask (drawn AFTER the FEA mesh so any triangles that
+  // spanned the hole don't cover it up).
+  const drawKeywayMask = document.getElementById('showKey')?.checked;
+  drawBoreMask(ctx, proj, 0, 0, rot1, i.bore1, drawKeywayMask, col1);
+  drawBoreMask(ctx, proj, C, 0, rot2, i.bore2, drawKeywayMask, col2);
+
+  // Decorative idler gear (visual only — not integrated into physics).
+  // Solved once and cached on state.fea.idler.
+  if (i.idler) {
+    drawIdlerFEA(ctx, proj, fea, i, rot1, vmax, stops, field, deformed, deformScale,
+                 drawKeywayMask);
+  }
 
   // Overlay: pitch circles, line of action, contact point
   ctx.lineWidth = 1;
@@ -1911,6 +2571,64 @@ function renderFEAFrame() {
     chip.style.color = ct.color;
     chip.style.borderColor = ct.color;
     chip.textContent = `${ct.label}  ·  load ×${ct.factor.toFixed(2)}  ·  ${realContacts.length} contact${realContacts.length === 1 ? '' : 's'}`;
+  }
+
+  // Driver / driven labels — placed below each gear with an RPM readout.
+  {
+    const rpmIn  = (state.inputs && state.inputs.mRpm) || 0;
+    const ratio  = i.z1 / Math.max(i.z2, 1);
+    const rpmOut = rpmIn * ratio * (i.idler ? 1 : -1);   // idler re-reverses
+    const labelY = -Math.max(ra1, ra2) - m * 1.5;
+    const drawLabel = (wx, wy, title, sub, color) => {
+      const [px, py] = proj(wx, wy);
+      ctx.font = 'bold 12px ui-monospace,monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = 'rgba(2, 6, 23, 0.75)';
+      const w = Math.max(ctx.measureText(title).width, ctx.measureText(sub).width) + 16;
+      ctx.fillRect(px - w/2, py - 18, w, 34);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1;
+      ctx.strokeRect(px - w/2, py - 18, w, 34);
+      ctx.fillStyle = color;
+      ctx.fillText(title, px, py - 6);
+      ctx.font = '10px ui-monospace,monospace';
+      ctx.fillStyle = '#cbd5e1';
+      ctx.fillText(sub, px, py + 8);
+      ctx.textAlign = 'start';
+      ctx.textBaseline = 'alphabetic';
+    };
+    drawLabel(0, labelY,   'DRIVER',
+              `z=${i.z1} · ${rpmIn.toFixed(0)} rpm`, '#60a5fa');
+    drawLabel(C, labelY,   'DRIVEN',
+              `z=${i.z2} · ${rpmOut.toFixed(0)} rpm`, '#f472b6');
+  }
+
+  // Legend — rebuilt every frame so field changes take immediate effect.
+  const legend = document.getElementById('feaLegend');
+  if (legend) {
+    const gradient = stops.map((c, k) =>
+      `rgb(${(c[0]*255)|0},${(c[1]*255)|0},${(c[2]*255)|0}) ${(k*25)}%`).join(', ');
+    const FIELD_META = {
+      vm:     { label: 'σ vM',   unit: 'MPa',    val: Math.max(fea.g1.maxVM, fea.g2.maxVM) },
+      sxx:    { label: '|σxx|',  unit: 'MPa',    val: Math.max(fea.g1.maxVM, fea.g2.maxVM) },
+      syy:    { label: '|σyy|',  unit: 'MPa',    val: Math.max(fea.g1.maxVM, fea.g2.maxVM) },
+      sxy:    { label: '|τxy|',  unit: 'MPa',    val: Math.max(fea.g1.maxVM, fea.g2.maxVM) },
+      s1:     { label: 'σ₁',     unit: 'MPa',    val: Math.max(fea.g1.maxVM, fea.g2.maxVM) },
+      s2:     { label: 'σ₂',     unit: 'MPa',    val: Math.max(fea.g1.maxVM, fea.g2.maxVM) },
+      shear:  { label: 'τmax',   unit: 'MPa',    val: Math.max(fea.g1.maxVM, fea.g2.maxVM) },
+      disp:   { label: '|u|',    unit: 'µm',     val: Math.max(fea.g1.maxDisp, fea.g2.maxDisp) * 1000 },
+      strain: { label: 'U',      unit: 'mJ/mm³', val: Math.max(fea.g1.maxStrainU, fea.g2.maxStrainU) },
+    };
+    const meta = FIELD_META[field] || FIELD_META.vm;
+    legend.innerHTML = `
+      <div class="flex items-center gap-2">
+        <span>0</span>
+        <span class="inline-block rounded" style="width:96px;height:8px;background:linear-gradient(to right,${gradient})"></span>
+        <span>${meta.val.toFixed(meta.val < 10 ? 2 : 1)}</span>
+        <span class="text-slate-500">${meta.unit} ${meta.label}${deformed ? ' · deformed' : ''}</span>
+      </div>
+    `;
   }
 }
 
@@ -2194,6 +2912,29 @@ $('cdOffReset').addEventListener('click', () => {
   if (!resSel) return;
   resSel.addEventListener('change', () => scheduleFEA(0));
   window.addEventListener('resize', renderFEAFrame);
+  // Field selector + deformed-mesh toggle: cheap re-render, no re-solve.
+  const fieldSel = document.getElementById('feaField');
+  const hintEl   = document.getElementById('feaFieldHint');
+  // One-line hint that floats in the top-right of the canvas so the user
+  // always sees what the current colour field means. Pulled from the
+  // option's `title` attribute so there's a single source of truth.
+  const updateHint = () => {
+    if (!fieldSel || !hintEl) return;
+    const opt   = fieldSel.options[fieldSel.selectedIndex];
+    const title = opt ? (opt.getAttribute('title') || '') : '';
+    const label = opt ? opt.textContent : '';
+    // Truncate very long titles to a single sentence for the in-canvas chip.
+    const firstSentence = title.split(/(?<=\.)\s+/)[0] || title;
+    hintEl.innerHTML = title
+      ? `<span class="text-fuchsia-300">${label}</span> — ${firstSentence}`
+      : '';
+  };
+  if (fieldSel) {
+    fieldSel.addEventListener('change', () => { updateHint(); renderFEAFrame(); });
+    updateHint();
+  }
+  const defEl = document.getElementById('feaDeformed');
+  if (defEl) defEl.addEventListener('change', () => renderFEAFrame());
 })();
 
 /* ---------- 4. Three.js scene ---------- */
